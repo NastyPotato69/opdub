@@ -225,29 +225,98 @@ def cmd_align(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """Align from a human-authored plan — no filename or language guessing."""
+    from .plan import PlanError, load_plan, run_plan
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def log(msg: str) -> None:
+        print(msg, flush=True)
+
+    try:
+        plan = load_plan(args.plan)
+    except PlanError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr, flush=True)
+        return 2
+
+    try:
+        edl = run_plan(plan, log=log)
+    except PlanError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr, flush=True)
+        return 2
+
+    stem = Path(edl["edit"]).stem
+    out_path = out_dir / f"{stem}.json"
+    out_path.write_text(json.dumps(edl, indent=2))
+    log(f"wrote {out_path}")
+    return 0
+
+
 def cmd_render(args: argparse.Namespace) -> int:
     edl_path = Path(args.edl)
-    source_dir = Path(args.sources)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     verbose = args.verbose
 
     edl = json.loads(edl_path.read_text())
+
+    # A plan-authored EDL carries absolute source paths, so --sources is only
+    # needed for the older basename-resolved EDLs.
+    if args.sources:
+        source_dir = Path(args.sources)
+    else:
+        stated = (edl.get("source_paths") or [])
+        if not stated:
+            print(
+                "ERROR: this EDL has no source_paths; pass --sources <dir>",
+                file=sys.stderr,
+            )
+            return 2
+        source_dir = Path(stated[0]).parent
+
     stem = Path(edl.get("edit", edl_path.stem)).stem
     output_wav = out_dir / f"{stem}.dub.wav"
 
     if verbose:
-        print(f"Rendering {stem} → {output_wav}")
+        print(f"Rendering {stem} → {output_wav}", flush=True)
 
     render_dub(
         edl=edl,
         source_dir=source_dir,
         output_path=output_wav,
         dub_lang=args.dub_lang,
+        crossfade_s=args.crossfade,
     )
 
     if verbose:
-        print(f"wrote {output_wav}")
+        print(f"wrote {output_wav}", flush=True)
+    return 0
+
+
+def cmd_mux(args: argparse.Namespace) -> int:
+    """Copy-mux a rendered dub WAV into the edit as an extra audio track."""
+    from .media import mux
+
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.verbose:
+        print(f"Muxing {Path(args.audio).name} into {Path(args.video).name}…",
+              flush=True)
+
+    mux(
+        source=args.video,
+        new_audio=args.audio,
+        output=out_path,
+        audio_lang=args.lang,
+        audio_title=args.title,
+        make_default=args.default,
+    )
+
+    if args.verbose:
+        print(f"wrote {out_path}", flush=True)
     return 0
 
 
@@ -264,12 +333,33 @@ def main() -> int:
                     help="Specific filenames within --sources to align (default: all)")
     al.add_argument("--verbose", "-v", action="store_true")
 
+    ru = sub.add_parser(
+        "run", help="Align from a plan JSON (explicit streams, pairs, ranges)")
+    ru.add_argument("plan", help="Plan JSON file")
+    ru.add_argument("--out", required=True, help="Output directory for EDL JSONs")
+    ru.add_argument("--verbose", "-v", action="store_true")
+
     rn = sub.add_parser("render", help="Render dub audio from EDL")
     rn.add_argument("edl", help="EDL JSON file")
-    rn.add_argument("--sources", required=True, help="Directory of source files")
+    rn.add_argument("--sources", default=None,
+                    help="Directory of source files (optional for plan EDLs, "
+                         "which carry absolute source paths)")
     rn.add_argument("--out", required=True, help="Output directory for .dub.wav files")
     rn.add_argument("--dub-lang", default="eng", help="Language tag for dub track")
+    rn.add_argument("--crossfade", type=float, default=0.0,
+                    help="Equal-power crossfade at segment boundaries, seconds "
+                         "(default 0; try 0.02 to soften the passthrough seam)")
     rn.add_argument("--verbose", "-v", action="store_true")
+
+    mx = sub.add_parser("mux", help="Copy-mux a dub WAV into the edit")
+    mx.add_argument("video", help="Edit video file")
+    mx.add_argument("audio", help="Rendered .dub.wav")
+    mx.add_argument("output", help="Output MKV path")
+    mx.add_argument("--lang", default="eng", help="Language tag for the new track")
+    mx.add_argument("--title", default="English Dub", help="Title for the new track")
+    mx.add_argument("--default", action="store_true",
+                    help="Mark the new track as the default audio track")
+    mx.add_argument("--verbose", "-v", action="store_true")
 
     args = ap.parse_args()
     if args.cmd is None:
@@ -277,8 +367,12 @@ def main() -> int:
         return 1
     if args.cmd == "align":
         return cmd_align(args)
+    if args.cmd == "run":
+        return cmd_run(args)
     if args.cmd == "render":
         return cmd_render(args)
+    if args.cmd == "mux":
+        return cmd_mux(args)
     return 0
 
 

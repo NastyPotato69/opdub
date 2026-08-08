@@ -1,0 +1,16 @@
+services:
+  opdub:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Media is mounted READ-ONLY. This is the enforcement mechanism for the
+      # rule that source episodes are irreplaceable — edit these two paths.
+      - /workspace/onepace:/media/edits:ro
+      - /workspace/onepiece:/media/sources:ro
+      # Everything the tool produces goes here.
+      - ./out:/out
+    environment:
+      OPDUB_MEDIA: /media/edits:/media/sources
+      OPDUB_OUT: /out
+    restart: unless-stopped

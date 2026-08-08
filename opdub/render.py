@@ -256,13 +256,25 @@ def render_dub(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     source_names: list[str] = edl.get("sources", [])
+    edl_source_paths: dict = {
+        str(i): p for i, p in enumerate(edl.get("source_paths", []) or [])
+    }
     source_paths: list[Path] = []
-    for name in source_names:
+    for i, name in enumerate(source_names):
+        # A plan-authored EDL records the absolute path the operator chose.
+        # Prefer it over re-resolving the basename, which can land on the
+        # wrong file when two episodes share a name in different directories.
+        stated = edl_source_paths.get(str(i))
+        if stated and Path(stated).exists():
+            source_paths.append(Path(stated))
+            continue
         candidate = source_dir / Path(name).name
         source_paths.append(candidate if candidate.exists() else Path(name))
 
     edl_offsets: dict = edl.get("dub_offsets", {})
     edl_dub_files: dict = edl.get("dub_files", {})
+    edl_dub_paths: dict = edl.get("dub_paths", {}) or {}
+    edl_dub_streams: dict = edl.get("dub_streams", {}) or {}
 
     dub_offsets: dict[int, float] = {
         i: float(edl_offsets.get(str(i), 0.0)) for i in range(len(source_paths))
@@ -270,6 +282,9 @@ def render_dub(
 
     # Resolve which file to read dub audio from for each source index.
     def _dub_path_for(i: int, sp: Path) -> Path:
+        stated = edl_dub_paths.get(str(i))
+        if stated and Path(stated).exists():
+            return Path(stated)
         fname = edl_dub_files.get(str(i))
         if fname:
             candidate = source_dir / fname
@@ -282,6 +297,15 @@ def render_dub(
         dub_file = _dub_path_for(i, sp)
         if not dub_file.exists():
             continue
+
+        # An explicit stream index from a plan is authoritative: the operator
+        # listened to that stream and confirmed it is the dub.  Never second-
+        # guess it with a language tag, which is exactly what gets this wrong.
+        stated_stream = edl_dub_streams.get(str(i))
+        if stated_stream is not None:
+            dub_audios[i] = decode_audio(dub_file, int(stated_stream), sr=sr_out)
+            continue
+
         info = probe(dub_file)
         file_lang = lang_from_filename(dub_file)
         try:
@@ -301,10 +325,44 @@ def render_dub(
     cf = max(0, int(crossfade_s * sr_out))
     pieces: list[np.ndarray] = []
 
+    # Passthrough ranges (opening theme, credits) keep the edit's own audio.
+    # Decoded on demand so EDLs without passthrough pay nothing for it.
+    edit_audio: np.ndarray | None = None
+
+    def _edit_audio() -> np.ndarray | None:
+        nonlocal edit_audio
+        if edit_audio is not None:
+            return edit_audio
+        ep = edl.get("edit_path")
+        es = edl.get("edit_stream")
+        if not ep or es is None or not Path(ep).exists():
+            return None
+        edit_audio = decode_audio(ep, int(es), sr=sr_out)
+        return edit_audio
+
     for seg in edl.get("segments", []):
         src_i = seg.get("src")
         duration = seg["t1"] - seg["t0"]
         n = int(round(duration * sr_out))
+
+        if seg.get("status") == "passthrough":
+            ea = _edit_audio()
+            if ea is None:
+                print(
+                    f"WARNING: passthrough {seg['t0']:.2f}-{seg['t1']:.2f}s but "
+                    f"the edit's audio is unavailable — writing silence",
+                    file=sys.stderr,
+                )
+                pieces.append(np.zeros(n, dtype=np.float32))
+                continue
+            s0 = max(0, int(round(seg["t0"] * sr_out)))
+            chunk = ea[s0 : s0 + n]
+            if len(chunk) < n:
+                chunk = np.concatenate(
+                    [chunk, np.zeros(n - len(chunk), dtype=np.float32)]
+                )
+            pieces.append(chunk.astype(np.float32))
+            continue
 
         if src_i is None or src_i not in dub_audios:
             pieces.append(np.zeros(n, dtype=np.float32))
