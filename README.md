@@ -68,14 +68,34 @@ On macOS the script will not download binaries — install ffmpeg with
 
 ### B. Docker
 
-Media is mounted **read-only**, which is what enforces the rule that source
-episodes are never modified. Edit the two paths in `docker-compose.yml`, then:
+Two volumes, both inside the project folder — one in, one out:
+
+```
+input/     → /input  (read-only)    your media
+out/       → /out    (writable)     everything opdub produces
+```
+
+Put your media anywhere under `input/`; nest it however you like, because the
+UI discovers folders that contain media rather than assuming a layout. A
+starting shape is `input/edits/` and `input/sources/`, and both folders ship
+empty in the repo.
 
 ```bash
 docker compose up --build
 ```
 
-The UI is on <http://localhost:8000>. Output lands in `./out`.
+The UI is on <http://localhost:8000>.
+
+`input/` is mounted `:ro`. That read-only flag — not a convention the code is
+trusted to follow — is what guarantees source episodes are never modified.
+
+If your media cannot live in the project folder, point the mounts elsewhere
+with a `.env` file next to `docker-compose.yml`:
+
+```ini
+OPDUB_INPUT=/mnt/media/onepiece
+OPDUB_OUTPUT=/mnt/big-disk/opdub-out
+```
 
 ### C. Manual install
 
@@ -282,16 +302,29 @@ and re-running `render` — no need to re-run the alignment.
 
 ## File layout
 
-```
-sources/
-├── Episode 313 Title.jpn.mp4   ← Japanese audio (used for alignment)
-├── Episode 313 Title.eng.mp4   ← English dub   (used for rendering)
-├── Episode 314 Title.jpn.mp4
-└── ...
+One input tree and one output tree, both in the project folder:
 
-edits/
-└── Episode 01.mp4              ← fan edit (Japanese audio only)
 ```
+input/                          ← mounted read-only
+├── edits/
+│   └── Episode 01.mp4          ← fan edit (Japanese audio only)
+└── sources/
+    ├── Episode 313 Title.jpn.mp4   ← Japanese audio (alignment)
+    ├── Episode 313 Title.eng.mp4   ← English dub   (rendering)
+    └── ...
+
+out/                            ← the only writable location
+├── edls/      EDL JSON per edit
+├── wav/       rendered dub tracks
+├── muxed/     finished episodes
+├── plans/     the plan each run was built from
+├── projects/  saved UI setups
+└── cache/     waveform peaks
+```
+
+The nesting is up to you — `input/arc-11/`, `input/whisky-peak/sources/` and so
+on all work, because the UI lists folders that contain media instead of
+expecting fixed names.
 
 The `.jpn.` / `.eng.` / `.skip.` suffixes are only used by the `align` command,
 which falls back to the stream language tag and then to episode number. The

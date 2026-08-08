@@ -529,6 +529,61 @@ def api_browse(dir: str) -> dict:
     return {"dir": str(d), "dirs": dirs, "files": files}
 
 
+# How deep to look for media when populating the folder pickers. The input
+# tree is a bind mount the operator organises however they like, so this walks
+# rather than assuming a layout — but stays bounded so a deep tree cannot
+# turn the folder dropdown into a long scan.
+MEDIA_SCAN_DEPTH = 4
+
+
+def _dirs_with_media(root: Path, depth: int) -> list[dict]:
+    """Every directory at or under root that directly contains media files."""
+    found: list[dict] = []
+
+    def walk(d: Path, level: int) -> None:
+        try:
+            entries = sorted(d.iterdir(), key=lambda p: p.name.lower())
+        except (PermissionError, OSError):
+            return
+        n = 0
+        subdirs = []
+        for p in entries:
+            if p.name.startswith("."):
+                continue
+            if p.is_dir():
+                subdirs.append(p)
+            elif p.suffix.lower() in MEDIA_EXTS:
+                n += 1
+        if n:
+            found.append({
+                "path": str(d),
+                "root": str(root),
+                "rel": "." if d == root else str(d.relative_to(root)),
+                "files": n,
+            })
+        if level < depth:
+            for p in subdirs:
+                # Never descend into the output tree if it sits inside a root.
+                if p.resolve() == OUT_DIR:
+                    continue
+                walk(p, level + 1)
+
+    if root.is_dir():
+        walk(root, 0)
+    return found
+
+
+@app.get("/api/media-dirs")
+async def api_media_dirs() -> dict:
+    """Folders holding media, so nested input trees are discoverable in the UI."""
+    def scan() -> list[dict]:
+        out: list[dict] = []
+        for root in MEDIA_ROOTS:
+            out.extend(_dirs_with_media(root, MEDIA_SCAN_DEPTH))
+        return out
+    return {"dirs": await asyncio.to_thread(scan)}
+
+
 @app.post("/api/probe")
 async def api_probe(req: Request) -> dict:
     body = await req.json()

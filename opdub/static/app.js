@@ -13,6 +13,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 const S = {
   config: null,
+  mediaDirs: [],  // folders under the media roots that hold media files
   pairs: [],      // source episodes, hand-paired
   edits: [],      // edits with stream / sources / passthrough
   jobs: [],
@@ -158,6 +159,17 @@ async function browseInto(dir) {
       const b = document.createElement('button');
       b.className = 'btn sm'; b.textContent = r.path;
       b.onclick = () => browseInto(r.path);
+      roots.append(b);
+    }
+    // Shortcuts straight to nested folders that actually hold media, so a
+    // deep input tree does not have to be clicked through one level at a time.
+    for (const m of S.mediaDirs.slice(0, 12)) {
+      if (m.rel === '.') continue;
+      const b = document.createElement('button');
+      b.className = 'btn sm';
+      b.textContent = `${m.rel} (${m.files})`;
+      b.title = m.path;
+      b.onclick = () => browseInto(m.path);
       roots.append(b);
     }
     list.append(roots);
@@ -427,6 +439,32 @@ $('#btnAddPair').onclick = () => {
 };
 
 // ────────────────────────── step 2: edits ───────────────────────────
+
+async function loadMediaDirs() {
+  try {
+    S.mediaDirs = (await api('/api/media-dirs')).dirs || [];
+  } catch (_) { S.mediaDirs = []; }
+
+  const sel = $('#editDirPick');
+  const multiRoot = S.config.roots.length > 1;
+  sel.innerHTML = '<option value="">— folders with media —</option>' +
+    S.mediaDirs.map(m => {
+      // With one root, the relative path is the useful label; with several,
+      // show the root too so two "edits" folders cannot be confused.
+      const label = m.rel === '.' ? m.root : (multiRoot ? `${m.root}/${m.rel}` : m.rel);
+      return `<option value="${esc(m.path)}">${esc(label)} · ${m.files}</option>`;
+    }).join('');
+  if (S.mediaDirs.some(m => m.path === $('#editDir').value)) {
+    sel.value = $('#editDir').value;
+  }
+}
+
+$('#editDirPick').onchange = () => {
+  const v = $('#editDirPick').value;
+  if (!v) return;
+  $('#editDir').value = v;
+  $('#btnLoadEdits').click();
+};
 
 $('#btnLoadEdits').onclick = async () => {
   const dir = $('#editDir').value.trim();
@@ -1355,6 +1393,7 @@ window.addEventListener('resize', () => {
   await restoreLocal();
   if (S.projectName) $('#projectLabel').textContent = S.projectName;
   renderPairs(); renderEdits();
+  await loadMediaDirs();
   await loadJobs(); await loadEdlList();
   connectEvents();
 })();

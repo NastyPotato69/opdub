@@ -4,13 +4,20 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Media is mounted READ-ONLY. This is the enforcement mechanism for the
-      # rule that source episodes are irreplaceable — edit these two paths.
-      - /workspace/onepace:/media/edits:ro
-      - /workspace/onepiece:/media/sources:ro
-      # Everything the tool produces goes here.
-      - ./out:/out
+      # Two mounts, both inside the project folder.
+      #
+      # input/  is READ-ONLY (:ro). That is the enforcement mechanism for the
+      #         rule that source episodes are irreplaceable — not a convention
+      #         the code is trusted to follow. Nest whatever you like in here;
+      #         the UI browses subfolders.
+      # out/    is the only writable location: EDLs, WAVs, muxed episodes,
+      #         saved setups, waveform cache.
+      #
+      # Point these somewhere else by setting OPDUB_INPUT / OPDUB_OUTPUT in a
+      # .env file next to this one, if your media cannot live in the project.
+      - ${OPDUB_INPUT:-./input}:/input:ro
+      - ${OPDUB_OUTPUT:-./out}:/out
     environment:
-      OPDUB_MEDIA: /media/edits:/media/sources
+      OPDUB_MEDIA: /input
       OPDUB_OUT: /out
     restart: unless-stopped

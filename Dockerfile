@@ -12,8 +12,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY opdub ./opdub
 
-# Media roots are mounted read-only at run time; only /out is writable.
-ENV OPDUB_MEDIA=/media/edits:/media/sources \
+# One read-only input tree, one writable output tree. Both are bind-mounted
+# from the project folder by docker-compose.
+ENV OPDUB_MEDIA=/input \
     OPDUB_OUT=/out
 
 EXPOSE 8000
