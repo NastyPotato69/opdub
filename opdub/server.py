@@ -34,6 +34,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
+from .detect import auto_assign
 from .media import decode_audio, probe
 from .plan import PlanError, measure_pair_offset, validate_plan
 
@@ -610,6 +611,26 @@ def api_preview(path: str, stream: int, t: float = 0.0, dur: float = 6.0):
 def api_waveform(path: str, stream: int, points: int = 1400) -> dict:
     p = _resolve_readable(path)
     return _waveform_peaks(p, stream, points)
+
+
+@app.post("/api/auto-assign")
+async def api_auto_assign(req: Request) -> dict:
+    """Propose source pairings from stream tags and filenames.
+
+    A proposal, not a decision: it lands in the UI as a filled-in form the
+    operator reviews. Anything it cannot match confidently is returned in
+    `unmatched` with the reason, and left blank.
+    """
+    body = await req.json()
+    mode = body.get("mode") or "separate"
+    if mode not in ("separate", "multitrack"):
+        raise HTTPException(400, f"unknown mode {mode!r}")
+    paths = [_resolve_readable(p) for p in (body.get("paths") or [])]
+
+    def work() -> dict:
+        return auto_assign([_probe_file(p) for p in paths], mode)
+
+    return await asyncio.to_thread(work)
 
 
 @app.post("/api/offset")

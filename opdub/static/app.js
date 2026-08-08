@@ -14,6 +14,9 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const S = {
   config: null,
   mediaDirs: [],  // folders under the media roots that hold media files
+  sourceMode: 'separate',   // 'separate' | 'multitrack'
+  sourceDir: '',
+  sourceFiles: [],          // probed files in the sources folder
   pairs: [],      // source episodes, hand-paired
   edits: [],      // edits with stream / sources / passthrough
   jobs: [],
@@ -78,40 +81,102 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 
 let currentAudio = null, currentBtn = null;
 
+/** What is playing right now, so the bar can show it and switch tracks. */
+const NP = { path: null, stream: null, t: 0, dur: 0, name: '', streams: [] };
+
 function stopAudio() {
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   if (currentBtn) { currentBtn.classList.remove('playing'); currentBtn = null; }
+  NP.path = null;
+  renderNowPlaying();
 }
 
-function play(path, stream, t, dur, btn) {
-  const same = currentBtn === btn;
+function play(path, stream, t, dur, btn, opts = {}) {
+  const same = currentBtn === btn && currentAudio;
   stopAudio();
-  if (same) return;
+  if (same) return;                       // clicking the same button stops
+
   const url = `/api/preview?path=${encodeURIComponent(path)}&stream=${stream}` +
               `&t=${Math.max(0, t).toFixed(3)}&dur=${dur}`;
   const a = new Audio(url);
   currentAudio = a; currentBtn = btn;
   if (btn) btn.classList.add('playing');
+
+  NP.path = path; NP.stream = stream; NP.t = Math.max(0, t); NP.dur = dur;
+  NP.name = opts.name || path.split('/').pop();
+  NP.streams = opts.streams || [];
+  renderNowPlaying();
+
   a.onended = stopAudio;
   a.onerror = () => { toast('Could not play that stream', 'bad'); stopAudio(); };
   a.play().catch(() => {});
 }
 
+/** Switch to another track of the same file, continuing where we are.
+ *  Hearing the same instant in both languages is the whole point. */
+function switchTrack(stream) {
+  if (!NP.path || !currentAudio) return;
+  const elapsed = currentAudio.currentTime || 0;
+  const remaining = Math.max(2, NP.dur - elapsed);
+  const at = NP.t + elapsed;
+  const opts = { name: NP.name, streams: NP.streams };
+  const path = NP.path;
+  stopAudio();
+  play(path, stream, at, remaining, null, opts);
+}
+
+function renderNowPlaying() {
+  const bar = $('#np');
+  if (!NP.path) { bar.classList.remove('on'); return; }
+  bar.classList.add('on');
+
+  const cur = NP.streams.find(s => s.index === NP.stream);
+  const tag = cur ? (cur.language || cur.title || `stream ${cur.index}`) : `stream ${NP.stream}`;
+  $('#npWhat').textContent = `${NP.name} — track #${NP.stream} (${tag}) from ${fmt(NP.t)}`;
+
+  const host = $('#npTracks');
+  host.innerHTML = '';
+  if (NP.streams.length > 1) {
+    host.append(Object.assign(document.createElement('span'),
+      { className: 'hint', textContent: 'switch:' }));
+    for (const s of NP.streams) {
+      const b = document.createElement('button');
+      if (s.index === NP.stream) b.className = 'cur';
+      const lbl = s.language || (s.title ? s.title.slice(0, 14) : `${s.codec || 'audio'}`);
+      b.textContent = `#${s.index} ${lbl}`;
+      b.title = `${s.codec || ''} ${s.channels || ''}ch ${s.title || ''}`.trim();
+      b.onclick = () => switchTrack(s.index);
+      host.append(b);
+    }
+  }
+}
+
+$('#npStop').onclick = stopAudio;
+
 /** A listen button. Defaults to mid-file, which is where speech lives —
  *  the opening theme is identical in every language and proves nothing. */
-function playBtn(path, stream, t, dur = 6, label = '▶') {
+function playBtn(path, stream, t, dur = 6, label = '▶', opts = {}) {
   const b = document.createElement('button');
   b.className = 'play'; b.textContent = label; b.title = `Listen at ${fmt(t)}`;
-  b.onclick = e => { e.stopPropagation(); play(path, stream, t, dur, b); };
+  b.onclick = e => { e.stopPropagation(); play(path, stream, t, dur, b, opts); };
   return b;
 }
 
+/** Mid-file, clamped so short files still land inside the audio. */
+const midpoint = pr => Math.max(5, (pr?.duration || 600) / 2);
+
 // ─────────────────────────── persistence ────────────────────────────
+
+/** Probe blobs are dropped on the way out and re-attached on load — they are
+ *  re-derivable from the server and would otherwise blow the storage quota. */
+const stripProbe = p => p && ({ ...p, probe: null });
 
 function saveLocal() {
   try {
     localStorage.setItem('opdub', JSON.stringify({
-      pairs: S.pairs,
+      sourceMode: S.sourceMode,
+      sourceDir: S.sourceDir,
+      pairs: S.pairs.map(p => ({ ...p, jpn: stripProbe(p.jpn), dub: stripProbe(p.dub) })),
       edits: S.edits.map(e => ({ ...e, probe: null, wave: null })),
       editDir: $('#editDir').value, projectName: S.projectName,
     }));
@@ -124,6 +189,9 @@ async function restoreLocal() {
   if (!d) return;
   S.pairs = d.pairs || [];
   S.projectName = d.projectName || '';
+  S.sourceMode = d.sourceMode === 'multitrack' ? 'multitrack' : 'separate';
+  S.sourceDir = d.sourceDir || '';
+  if (S.sourceDir) $('#srcDir').value = S.sourceDir;
   if (d.editDir) $('#editDir').value = d.editDir;
   for (const e of (d.edits || [])) {
     try { e.probe = (await api('/api/probe', {
@@ -241,31 +309,248 @@ function streamChooser(pr, picked, onPick) {
 }
 
 // ───────────────────────── step 1: sources ──────────────────────────
+//
+// Two library layouts, one underlying model. Whichever mode is active, a
+// "pair" is always {jpn: {path, stream}, dub: {path, stream}} — in separate
+// mode the two paths differ, in multi-track mode they are the same file with
+// two stream indices. Steps 2-4 never need to know which mode was used.
+
+const MODE_HINTS = {
+  separate: 'Each file holds one language, so files must be paired with each ' +
+            'other. Drag from the list into a row, or click a file then click a slot.',
+  multitrack: 'Each file holds several audio tracks, so nothing needs pairing — ' +
+              'only the tracks need identifying. Play them to check.',
+};
+
+let poolPick = null;    // file clicked in the pool, waiting for a slot
+let dragPath = null;    // survives browsers with awkward dataTransfer rules
+
+function setSourceMode(mode) {
+  if (S.sourceMode === mode) return;
+  S.sourceMode = mode;
+  poolPick = null;
+  saveLocal();
+  renderPairs();
+}
+
+$$('#modeSwitch button').forEach(b => {
+  b.onclick = () => setSourceMode(b.dataset.mode);
+});
+
+function assignedPaths() {
+  const s = new Set();
+  for (const p of S.pairs) {
+    if (p.jpn?.path) s.add(p.jpn.path);
+    if (p.dub?.path) s.add(p.dub.path);
+  }
+  return s;
+}
+
+function fileByPath(path) {
+  return S.sourceFiles.find(f => f.path === path) || null;
+}
+
+function pairForFile(path) {
+  return S.pairs.find(p => p.jpn?.path === path || p.dub?.path === path) || null;
+}
+
+function newPair(label) {
+  const p = { id: uid(), label: label || `Episode ${S.pairs.length + 1}`,
+              jpn: null, dub: null, offset: null, offsetReport: null };
+  S.pairs.push(p);
+  return p;
+}
+
+/** Attach a file to one side of a pair. Stream is only auto-filled when the
+ *  file has exactly one audio track — that is arithmetic, not a guess. */
+function assignToSlot(pair, role, path) {
+  const pr = fileByPath(path);
+  if (!pr) return;
+  const audio = pr.audio || [];
+  pair[role] = {
+    path, name: pr.name, probe: pr,
+    stream: audio.length === 1 ? audio[0].index : null,
+  };
+  pair.offset = null; pair.offsetReport = null;
+  poolPick = null;
+  saveLocal(); renderPairs();
+}
+
+function clearSlot(pair, role) {
+  pair[role] = null;
+  pair.offset = null; pair.offsetReport = null;
+  saveLocal(); renderPairs();
+}
+
+// ── main render ──
 
 function renderPairs() {
+  $('#nSources').textContent = S.pairs.filter(
+    p => p.jpn?.stream != null && p.dub?.stream != null).length;
+  $('#modeHint').textContent = MODE_HINTS[S.sourceMode] || '';
+  $$('#modeSwitch button').forEach(
+    b => b.classList.toggle('active', b.dataset.mode === S.sourceMode));
+  $('#modeSeparate').style.display = S.sourceMode === 'separate' ? '' : 'none';
+  $('#modeMulti').style.display = S.sourceMode === 'multitrack' ? '' : 'none';
+
+  if (S.sourceMode === 'separate') { renderPool(); renderPairTable(); }
+  else { renderMultitrack(); }
+}
+
+// ── mode A: the file pool ──
+
+function streamBadges(pr) {
+  const wrap = document.createElement('span');
+  wrap.className = 'row'; wrap.style.gap = '4px';
+  for (const a of (pr.audio || [])) {
+    const s = document.createElement('span');
+    const tag = a.language || (a.title ? a.title.slice(0, 10) : 'untagged');
+    s.className = 'pill' + (a.language ? ' info' : '');
+    s.textContent = `#${a.index} ${tag}`;
+    s.title = `${a.codec || ''} ${a.channels || ''}ch ${a.title || ''}`.trim();
+    wrap.append(s);
+  }
+  if (!(pr.audio || []).length) {
+    wrap.append(Object.assign(document.createElement('span'),
+      { className: 'pill bad', textContent: 'no audio' }));
+  }
+  return wrap;
+}
+
+function renderPool() {
+  const host = $('#filePool');
+  host.innerHTML = '';
+  const used = assignedPaths();
+  const hide = $('#hideAssigned').checked;
+  const shown = S.sourceFiles.filter(f => !(hide && used.has(f.path)));
+
+  if (!S.sourceFiles.length) {
+    host.innerHTML = '<p class="empty">Load a sources folder to see its files.</p>';
+    return;
+  }
+  if (!shown.length) {
+    host.innerHTML = '<p class="empty">Every file is assigned.</p>';
+    return;
+  }
+
+  for (const pr of shown) {
+    const chip = document.createElement('div');
+    chip.className = 'chip' + (used.has(pr.path) ? ' used' : '') +
+                     (poolPick === pr.path ? ' picked' : '');
+    chip.draggable = true;
+
+    chip.ondragstart = ev => {
+      dragPath = pr.path;
+      ev.dataTransfer.setData('text/plain', pr.path);
+      ev.dataTransfer.effectAllowed = 'copy';
+      chip.classList.add('dragging');
+    };
+    chip.ondragend = () => { chip.classList.remove('dragging'); dragPath = null; };
+    chip.onclick = () => {
+      poolPick = poolPick === pr.path ? null : pr.path;
+      renderPool();
+    };
+
+    const nm = document.createElement('span');
+    nm.className = 'nm'; nm.textContent = pr.name; nm.title = pr.name;
+    chip.append(nm, streamBadges(pr));
+
+    const first = (pr.audio || [])[0];
+    if (first) {
+      chip.append(playBtn(pr.path, first.index, midpoint(pr), 6, '▶',
+                          { name: pr.name, streams: pr.audio }));
+    }
+    host.append(chip);
+  }
+}
+
+// ── mode A: the episode table ──
+
+function dropSlot(pair, role) {
+  const slot = pair[role];
+  const box = document.createElement('div');
+  box.className = 'drop ' + (role === 'dub' ? 'eng' : 'jpn');
+
+  box.ondragover = ev => { ev.preventDefault(); box.classList.add('over'); };
+  box.ondragleave = () => box.classList.remove('over');
+  box.ondrop = ev => {
+    ev.preventDefault();
+    box.classList.remove('over');
+    const path = ev.dataTransfer.getData('text/plain') || dragPath;
+    if (path) assignToSlot(pair, role, path);
+  };
+
+  if (!slot) {
+    box.classList.add('empty');
+    box.textContent = poolPick
+      ? `click to put ${fileByPath(poolPick)?.name.slice(0, 28) || 'file'} here`
+      : (role === 'dub' ? 'drop the English file' : 'drop the Japanese file');
+    box.onclick = () => { if (poolPick) assignToSlot(pair, role, poolPick); };
+    return box;
+  }
+
+  const top = document.createElement('div');
+  top.className = 'row'; top.style.gap = '6px';
+  const fn = document.createElement('span');
+  fn.className = 'fn'; fn.style.flex = '1'; fn.textContent = slot.name; fn.title = slot.name;
+  top.append(fn);
+
+  const audio = slot.probe?.audio || [];
+  if (slot.stream != null) {
+    top.append(playBtn(slot.path, slot.stream, midpoint(slot.probe), 6, '▶',
+                       { name: slot.name, streams: audio }));
+  }
+  const x = document.createElement('button');
+  x.className = 'play'; x.textContent = '✕'; x.title = 'remove';
+  x.onclick = ev => { ev.stopPropagation(); clearSlot(pair, role); };
+  top.append(x);
+  box.append(top);
+
+  if (audio.length > 1) {
+    const sel = document.createElement('select');
+    sel.style.fontSize = '11.5px';
+    sel.innerHTML = '<option value="">— pick the track —</option>' +
+      audio.map(a => `<option value="${a.index}" ${a.index === slot.stream ? 'selected' : ''}>` +
+        `#${a.index} ${esc(a.language || a.title || a.codec || 'audio')}</option>`).join('');
+    sel.onchange = () => {
+      slot.stream = sel.value === '' ? null : parseInt(sel.value, 10);
+      pair.offset = null; pair.offsetReport = null;
+      saveLocal(); renderPairs();
+    };
+    box.append(sel);
+  } else if (slot.stream == null) {
+    box.append(Object.assign(document.createElement('span'),
+      { className: 'hint bad', textContent: 'this file has no audio track' }));
+  }
+  return box;
+}
+
+function renderPairTable() {
   const host = $('#pairTable');
   host.innerHTML = '';
-  $('#nSources').textContent = S.pairs.length;
 
   if (!S.pairs.length) {
-    host.innerHTML = '<p class="empty">No source episodes yet. ' +
-      'Add one for each original episode your edits draw from.</p>';
+    host.innerHTML = '<p class="empty">No episodes yet. Press ' +
+      '<b>Assign automatically</b>, or add a row and drag files in.</p>';
     return;
   }
 
   for (const p of S.pairs) {
     const card = document.createElement('div');
-    card.className = 'card tight';
-    card.style.marginBottom = '10px';
+    card.className = 'card tight'; card.style.marginBottom = '10px';
 
     const head = document.createElement('div');
     head.className = 'row';
     const name = document.createElement('input');
-    name.value = p.label; name.style.flex = '1'; name.style.minWidth = '180px';
+    name.value = p.label; name.style.flex = '1'; name.style.minWidth = '140px';
     name.oninput = () => { p.label = name.value; saveLocal(); refreshEditCards(); };
-    head.append(Object.assign(document.createElement('span'),
-      { className: 'pill info', textContent: `#${S.pairs.indexOf(p)}` }), name);
+    head.append(name);
 
+    if (p.reason) {
+      const why = document.createElement('span');
+      why.className = 'pill'; why.textContent = 'auto'; why.title = p.reason;
+      head.append(why);
+    }
     const del = document.createElement('button');
     del.className = 'btn sm danger'; del.textContent = 'Remove';
     del.onclick = () => {
@@ -273,71 +558,151 @@ function renderPairs() {
       for (const e of S.edits) e.sources = e.sources.filter(id => id !== p.id);
       saveLocal(); renderPairs(); refreshEditCards();
     };
-    const sp = document.createElement('span'); sp.style.flex = '1';
-    head.append(sp, del);
+    head.append(del);
     card.append(head);
 
+    const hdr = document.createElement('div');
+    hdr.className = 'pairhead'; hdr.style.marginTop = '9px';
+    hdr.innerHTML = '<span>English — the dub</span>' +
+                    '<span>Japanese — used for alignment</span>';
+    card.append(hdr);
+
     const grid = document.createElement('div');
-    grid.className = 'grid2'; grid.style.marginTop = '10px';
-    grid.append(slotUI(p, 'jpn', 'Japanese track — used for alignment'),
-                slotUI(p, 'dub', 'Dub track — used for the new audio'));
+    grid.className = 'pairgrid';
+    grid.append(dropSlot(p, 'dub'), dropSlot(p, 'jpn'));
     card.append(grid);
+
     card.append(offsetUI(p));
     host.append(card);
   }
 }
 
-function slotUI(pair, key, title) {
-  const box = document.createElement('div');
-  const slot = pair[key];
+$('#btnAddPair').onclick = () => {
+  newPair(`Episode ${S.pairs.length + 1}`);
+  saveLocal(); renderPairs();
+};
 
-  const h = document.createElement('h3');
-  h.textContent = title;
-  box.append(h);
+$('#hideAssigned').onchange = renderPool;
 
-  const row = document.createElement('div');
-  row.className = 'row'; row.style.margin = '6px 0';
-  const btn = document.createElement('button');
-  btn.className = 'btn sm';
-  btn.textContent = slot?.path ? 'Change file' : 'Choose file…';
-  btn.onclick = async () => {
-    const path = await pickFile(title, slot?.path
-      ? slot.path.replace(/\/[^/]+$/, '') : undefined);
-    if (!path) return;
-    const pr = await probeOne(path);
-    // No stream is preselected: picking one is the operator's call.
-    pair[key] = { path, name: pr.name, stream: null, probe: pr };
-    pair.offset = null; pair.offsetReport = null;
-    saveLocal(); renderPairs();
-  };
-  row.append(btn);
-  if (slot?.path) {
-    row.append(Object.assign(document.createElement('span'),
-      { className: 'mono hint', textContent: slot.name,
-        style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }));
+// ── mode B: identify tracks inside one file ──
+
+function setRole(pr, streamIndex, role) {
+  let pair = pairForFile(pr.path);
+  if (!pair) {
+    pair = newPair(pr.name.replace(/\.[^.]+$/, ''));
   }
-  box.append(row);
-
-  if (slot?.path) {
-    if (!slot.probe) {
-      probeOne(slot.path).then(pr => { slot.probe = pr; renderPairs(); });
-      box.append(Object.assign(document.createElement('p'),
-        { className: 'hint', textContent: 'Probing…' }));
-    } else {
-      box.append(streamChooser(slot.probe, slot.stream, idx => {
-        slot.stream = idx; pair.offset = null; pair.offsetReport = null;
-        saveLocal(); renderPairs();
-      }));
-      if (slot.stream == null) {
-        box.append(Object.assign(document.createElement('p'), {
-          className: 'hint warn', style: 'margin-top:6px',
-          textContent: '↑ Listen, then pick the stream. Nothing is chosen for you.',
-        }));
-      }
-    }
+  const other = role === 'jpn' ? 'dub' : 'jpn';
+  // The same track cannot be both languages.
+  if (pair[other]?.path === pr.path && pair[other]?.stream === streamIndex) {
+    pair[other] = null;
   }
-  return box;
+  pair[role] = { path: pr.path, name: pr.name, probe: pr, stream: streamIndex };
+  pair.offset = null; pair.offsetReport = null;
+  saveLocal(); renderPairs();
 }
+
+function clearRole(pr, role) {
+  const pair = pairForFile(pr.path);
+  if (!pair) return;
+  pair[role] = null;
+  pair.offset = null; pair.offsetReport = null;
+  if (!pair.jpn && !pair.dub) {
+    S.pairs = S.pairs.filter(x => x.id !== pair.id);
+    for (const e of S.edits) e.sources = e.sources.filter(id => id !== pair.id);
+  }
+  saveLocal(); renderPairs();
+}
+
+function renderMultitrack() {
+  const host = $('#trackList');
+  host.innerHTML = '';
+
+  if (!S.sourceFiles.length) {
+    host.innerHTML = '<div class="card"><p class="empty">' +
+      'Load a sources folder to see its files.</p></div>';
+    return;
+  }
+
+  for (const pr of S.sourceFiles) {
+    const pair = pairForFile(pr.path);
+    const audio = pr.audio || [];
+
+    const card = document.createElement('div');
+    card.className = 'card'; card.style.marginBottom = '10px';
+
+    const head = document.createElement('div');
+    head.className = 'row';
+    head.append(Object.assign(document.createElement('b'), { textContent: pr.name }));
+    const sp = document.createElement('span'); sp.style.flex = '1'; head.append(sp);
+    head.append(Object.assign(document.createElement('span'), {
+      className: 'hint mono',
+      textContent: pr.duration ? fmt(pr.duration) : '' }));
+
+    const done = pair?.jpn?.stream != null && pair?.dub?.stream != null;
+    head.append(Object.assign(document.createElement('span'), {
+      className: 'pill ' + (done ? 'ok' : audio.length < 2 ? 'bad' : 'warn'),
+      textContent: done ? 'both tracks set'
+        : audio.length < 2 ? `${audio.length} audio track`
+        : 'needs identifying' }));
+    card.append(head);
+
+    if (pr.error) {
+      card.append(Object.assign(document.createElement('p'),
+        { className: 'hint bad', textContent: pr.error }));
+      host.append(card);
+      continue;
+    }
+
+    const list = document.createElement('div');
+    list.className = 'streams'; list.style.marginTop = '10px';
+
+    for (const a of audio) {
+      const isJpn = pair?.jpn?.path === pr.path && pair.jpn.stream === a.index;
+      const isEng = pair?.dub?.path === pr.path && pair.dub.stream === a.index;
+
+      const row = document.createElement('div');
+      row.className = 'stream' + (isJpn || isEng ? ' picked' : '');
+
+      row.innerHTML =
+        `<span class="idx">#${a.index}</span>` +
+        `<span>${esc(a.codec || '?')} · ${a.channels || '?'}ch</span>` +
+        `<span class="tag">${esc(a.language ? 'lang=' + a.language : 'untagged')}` +
+        `${a.title ? ' · ' + esc(a.title) : ''}</span>`;
+
+      const spacer = document.createElement('span');
+      spacer.style.flex = '1'; row.append(spacer);
+
+      if (isJpn) row.append(Object.assign(document.createElement('span'),
+        { className: 'pill info', textContent: 'Japanese' }));
+      if (isEng) row.append(Object.assign(document.createElement('span'),
+        { className: 'pill warn', textContent: 'English' }));
+
+      const bj = document.createElement('button');
+      bj.className = 'btn sm'; bj.textContent = isJpn ? 'unset jpn' : 'Japanese';
+      bj.onclick = () => isJpn ? clearRole(pr, 'jpn') : setRole(pr, a.index, 'jpn');
+      const be = document.createElement('button');
+      be.className = 'btn sm'; be.textContent = isEng ? 'unset eng' : 'English';
+      be.onclick = () => isEng ? clearRole(pr, 'dub') : setRole(pr, a.index, 'dub');
+      row.append(bj, be);
+
+      row.append(playBtn(pr.path, a.index, midpoint(pr), 8, '▶ listen',
+                         { name: pr.name, streams: audio }));
+      list.append(row);
+    }
+    card.append(list);
+
+    if (audio.length > 1) {
+      card.append(Object.assign(document.createElement('p'), {
+        className: 'hint', style: 'margin-top:6px',
+        textContent: 'Press ▶ on one track, then use the switcher in the bar ' +
+                     'at the bottom to jump between tracks at the same moment.' }));
+    }
+    if (pair) card.append(offsetUI(pair));
+    host.append(card);
+  }
+}
+
+// ── shared: the jpn→dub offset ──
 
 function offsetUI(pair) {
   const box = document.createElement('div');
@@ -345,17 +710,18 @@ function offsetUI(pair) {
   box.style.paddingTop = '10px';
   box.style.borderTop = '1px solid var(--border)';
 
+  const sameFile = pair.jpn?.path && pair.jpn.path === pair.dub?.path;
   const ready = pair.jpn?.stream != null && pair.dub?.stream != null;
+
   const row = document.createElement('div');
   row.className = 'row';
-
   row.append(Object.assign(document.createElement('span'),
     { className: 'hint', textContent: 'jpn → dub offset' }));
 
   const inp = document.createElement('input');
   inp.type = 'number'; inp.step = '0.001'; inp.className = 'mono';
   inp.value = pair.offset != null ? pair.offset.toFixed(4) : '';
-  inp.placeholder = 'measure or type';
+  inp.placeholder = sameFile ? '0 (same file)' : 'measure or type';
   inp.onchange = () => {
     const v = parseFloat(inp.value);
     pair.offset = Number.isFinite(v) ? v : null;
@@ -388,10 +754,9 @@ function offsetUI(pair) {
     }
   };
   row.append(meas);
-
   if (!ready) {
     row.append(Object.assign(document.createElement('span'),
-      { className: 'hint', textContent: 'pick both streams first' }));
+      { className: 'hint', textContent: 'set both tracks first' }));
   }
   box.append(row);
 
@@ -417,13 +782,13 @@ function offsetUI(pair) {
   if (ready) {
     const cmp = document.createElement('div');
     cmp.className = 'row'; cmp.style.marginTop = '8px';
-    const t = (pair.jpn.probe?.duration || 900) / 2;
+    const t = midpoint(pair.jpn.probe);
     cmp.append(Object.assign(document.createElement('span'),
       { className: 'hint', textContent: 'Same scene?' }));
-    const bj = playBtn(pair.jpn.path, pair.jpn.stream, t, 6, '▶ jpn');
-    const bd = playBtn(pair.dub.path, pair.dub.stream,
-      t - (pair.offset || 0), 6, '▶ dub');
-    cmp.append(bj, bd);
+    cmp.append(playBtn(pair.jpn.path, pair.jpn.stream, t, 6, '▶ jpn',
+                       { name: pair.jpn.name, streams: pair.jpn.probe?.audio || [] }));
+    cmp.append(playBtn(pair.dub.path, pair.dub.stream, t - (pair.offset || 0), 6, '▶ dub',
+                       { name: pair.dub.name, streams: pair.dub.probe?.audio || [] }));
     cmp.append(Object.assign(document.createElement('span'), {
       className: 'hint',
       textContent: 'Both should be the same moment in different languages.' }));
@@ -432,11 +797,114 @@ function offsetUI(pair) {
   return box;
 }
 
-$('#btnAddPair').onclick = () => {
-  S.pairs.push({ id: uid(), label: `Episode ${S.pairs.length + 1}`,
-                 jpn: null, dub: null, offset: null, offsetReport: null });
-  saveLocal(); renderPairs();
+// ── loading the folder, and auto-assign ──
+
+$('#srcDirPick').onchange = () => {
+  const v = $('#srcDirPick').value;
+  if (!v) return;
+  $('#srcDir').value = v;
+  $('#btnLoadSources').click();
 };
+
+$('#btnLoadSources').onclick = async () => {
+  const dir = $('#srcDir').value.trim();
+  if (!dir) { toast('Pick a sources folder first', 'bad'); return; }
+  const btn = $('#btnLoadSources');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const d = await api(`/api/browse?dir=${encodeURIComponent(dir)}`);
+    const probes = await api('/api/probe', {
+      method: 'POST', body: JSON.stringify({ paths: d.files.map(f => f.path) }) });
+    S.sourceFiles = probes.files;
+    S.sourceDir = d.dir;
+
+    // Re-attach probe data to any pairs restored from a saved setup.
+    for (const p of S.pairs) {
+      for (const role of ['jpn', 'dub']) {
+        if (p[role]?.path) p[role].probe = fileByPath(p[role].path) || p[role].probe;
+      }
+    }
+    saveLocal(); renderPairs();
+    toast(`${probes.files.length} file(s) in ${d.dir}`, 'ok');
+  } catch (e) {
+    toast(e.message, 'bad');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load';
+  }
+};
+
+$('#btnClearPairs').onclick = () => {
+  if (!S.pairs.length) return;
+  S.pairs = [];
+  for (const e of S.edits) e.sources = [];
+  $('#assignReport').innerHTML = '';
+  saveLocal(); renderPairs(); refreshEditCards();
+};
+
+$('#btnAutoAssign').onclick = async () => {
+  if (!S.sourceFiles.length) { toast('Load a sources folder first', 'bad'); return; }
+  const btn = $('#btnAutoAssign');
+  btn.disabled = true; btn.textContent = 'Working…';
+  try {
+    const r = await api('/api/auto-assign', {
+      method: 'POST',
+      body: JSON.stringify({ mode: S.sourceMode,
+                             paths: S.sourceFiles.map(f => f.path) }),
+    });
+
+    S.pairs = r.pairs.map(p => ({
+      id: uid(),
+      label: p.label,
+      reason: p.reason,
+      jpn: p.jpn ? { path: p.jpn.path, name: p.jpn.path.split('/').pop(),
+                     stream: p.jpn.stream, probe: fileByPath(p.jpn.path) } : null,
+      dub: p.dub ? { path: p.dub.path, name: p.dub.path.split('/').pop(),
+                     stream: p.dub.stream, probe: fileByPath(p.dub.path) } : null,
+      offset: null, offsetReport: null,
+    }));
+    for (const e of S.edits) e.sources = [];
+
+    renderAssignReport(r);
+    saveLocal(); renderPairs(); refreshEditCards();
+    toast(`Assigned ${r.pairs.length}, left ${r.unmatched.length} for you`,
+          r.unmatched.length ? 'info' : 'ok');
+  } catch (e) {
+    toast(e.message, 'bad', 9000);
+  } finally {
+    btn.disabled = false; btn.textContent = '✨ Assign automatically';
+  }
+};
+
+function renderAssignReport(r) {
+  const host = $('#assignReport');
+  host.innerHTML = '';
+  if (!r.pairs.length && !r.unmatched.length) return;
+
+  const sum = document.createElement('div');
+  sum.className = 'row';
+  sum.innerHTML =
+    `<span class="pill ok">${r.pairs.length} assigned</span>` +
+    (r.unmatched.length
+      ? `<span class="pill warn">${r.unmatched.length} left for you</span>`
+      : `<span class="pill ok">nothing left over</span>`);
+  host.append(sum);
+
+  if (r.unmatched.length) {
+    const det = document.createElement('details');
+    det.style.marginTop = '7px';
+    det.innerHTML = `<summary class="hint" style="cursor:pointer">` +
+      `Why these were left alone</summary>`;
+    const ul = document.createElement('div');
+    ul.style.cssText = 'margin-top:6px;display:flex;flex-direction:column;gap:3px';
+    for (const u of r.unmatched) {
+      ul.insertAdjacentHTML('beforeend',
+        `<div class="hint"><span class="mono">${esc(u.path.split('/').pop())}</span>` +
+        ` — ${esc(u.why)}</div>`);
+    }
+    det.append(ul);
+    host.append(det);
+  }
+}
 
 // ────────────────────────── step 2: edits ───────────────────────────
 
@@ -445,17 +913,19 @@ async function loadMediaDirs() {
     S.mediaDirs = (await api('/api/media-dirs')).dirs || [];
   } catch (_) { S.mediaDirs = []; }
 
-  const sel = $('#editDirPick');
   const multiRoot = S.config.roots.length > 1;
-  sel.innerHTML = '<option value="">— folders with media —</option>' +
+  const opts = '<option value="">— folders with media —</option>' +
     S.mediaDirs.map(m => {
       // With one root, the relative path is the useful label; with several,
       // show the root too so two "edits" folders cannot be confused.
       const label = m.rel === '.' ? m.root : (multiRoot ? `${m.root}/${m.rel}` : m.rel);
       return `<option value="${esc(m.path)}">${esc(label)} · ${m.files}</option>`;
     }).join('');
-  if (S.mediaDirs.some(m => m.path === $('#editDir').value)) {
-    sel.value = $('#editDir').value;
+
+  for (const [sel, input] of [['#editDirPick', '#editDir'], ['#srcDirPick', '#srcDir']]) {
+    const el = $(sel);
+    el.innerHTML = opts;
+    if (S.mediaDirs.some(m => m.path === $(input).value)) el.value = $(input).value;
   }
 }
 
@@ -1365,6 +1835,16 @@ $('#btnLoadProject').onclick = async () => {
 
 // ─────────────────────────────── boot ───────────────────────────────
 
+/** Pick a discovered media folder whose name matches, else the fullest one.
+ *  Only ever used to prefill a folder box the operator can override. */
+function guessDir(pattern) {
+  if (!S.mediaDirs.length) return null;
+  const named = S.mediaDirs.filter(m => pattern.test(m.rel) || pattern.test(m.path));
+  const pool = named.length ? named : (S.mediaDirs.length === 1 ? S.mediaDirs : []);
+  if (!pool.length) return null;
+  return pool.slice().sort((a, b) => b.files - a.files)[0].path;
+}
+
 function showStep(name) {
   $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.step === name));
   $$('section.step').forEach(s => s.classList.toggle('active', s.id === `step-${name}`));
@@ -1394,6 +1874,19 @@ window.addEventListener('resize', () => {
   if (S.projectName) $('#projectLabel').textContent = S.projectName;
   renderPairs(); renderEdits();
   await loadMediaDirs();
+
+  // Preselect a plausible folder so neither tab opens empty. This only fills
+  // in a text box the operator can change — it decides nothing about content.
+  if (!$('#srcDir').value) $('#srcDir').value = guessDir(/sourc|orig|raw/i) || '';
+  if (!$('#editDir').value || $('#editDir').value === S.config.roots[0]?.path) {
+    $('#editDir').value = guessDir(/edit|pace|fan/i) || $('#editDir').value;
+  }
+
+  // Re-probing the sources folder fills the file pool and re-attaches probe
+  // data to pairs restored from storage, which is what the drag-and-drop and
+  // the track lists are drawn from. Server-side probe caching keeps it cheap.
+  if ($('#srcDir').value) await $('#btnLoadSources').onclick();
+
   await loadJobs(); await loadEdlList();
   connectEvents();
 })();

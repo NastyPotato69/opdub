@@ -127,6 +127,55 @@ dialog .dlg-body{padding:16px;max-height:70vh;overflow:auto}
 dialog .dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;
   border-top:1px solid var(--border)}
 
+/* mode switch */
+.segmented{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.segmented button{background:var(--surface);color:var(--dim);border:none;
+  padding:6px 13px;cursor:pointer;font-size:12.5px;font-weight:500}
+.segmented button+button{border-left:1px solid var(--border)}
+.segmented button:hover{color:var(--text)}
+.segmented button.active{background:#1f6feb;color:#fff}
+
+.grid-pool{display:grid;grid-template-columns:minmax(280px,1fr) minmax(420px,1.5fr);gap:14px}
+@media(max-width:1100px){.grid-pool{grid-template-columns:1fr}}
+
+/* draggable file chips */
+.chip{display:flex;gap:8px;align-items:center;padding:6px 9px;margin-bottom:6px;
+  border:1px solid var(--border);border-radius:6px;background:var(--surface2);
+  cursor:grab;font-size:12.5px;user-select:none}
+.chip:hover{border-color:var(--accent)}
+.chip.dragging{opacity:.4}
+.chip.picked{border-color:var(--accent);background:rgba(88,166,255,.14)}
+.chip.used{opacity:.42}
+.chip .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* drop targets */
+.drop{border:1px dashed var(--border);border-radius:6px;padding:7px 9px;
+  min-height:46px;display:flex;flex-direction:column;gap:4px;justify-content:center;
+  font-size:12.5px;transition:background .12s,border-color .12s}
+.drop.empty{color:var(--dim);align-items:center;cursor:pointer}
+.drop.over{border-color:var(--accent);background:rgba(88,166,255,.14);border-style:solid}
+.drop .fn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11.5px}
+.drop.eng{border-left:3px solid #d29922}
+.drop.jpn{border-left:3px solid #58a6ff}
+
+.pairgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pairhead{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:5px}
+.pairhead span{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+
+/* now playing */
+#np{position:fixed;left:0;right:0;bottom:0;z-index:90;background:var(--surface);
+  border-top:1px solid var(--border);padding:8px 16px;display:none;
+  align-items:center;gap:12px;flex-wrap:wrap}
+#np.on{display:flex}
+#np .eq{color:var(--accent);font-size:15px}
+#np .what{font-family:var(--mono);font-size:12px;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:44vw}
+#np .tracks{display:flex;gap:5px;flex-wrap:wrap}
+#np .tracks button{background:var(--surface2);border:1px solid var(--border);
+  color:var(--dim);border-radius:5px;padding:3px 9px;cursor:pointer;font-size:11.5px}
+#np .tracks button:hover{color:var(--text);border-color:var(--accent)}
+#np .tracks button.cur{background:var(--accent);color:#0d1117;border-color:var(--accent);font-weight:600}
+
 #toast{position:fixed;bottom:18px;right:18px;z-index:100;display:flex;
   flex-direction:column;gap:8px;align-items:flex-end}
 #toast div{background:var(--surface2);border:1px solid var(--border);border-left-width:3px;
@@ -159,23 +208,68 @@ dialog .dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px
 <!-- ─────────────────────────── 1. SOURCES ─────────────────────────── -->
 <section class="step active" id="step-sources">
   <div class="note">
-    Every pairing here is yours, not the program's. Nothing is matched by
-    filename and no language tag is trusted — pick the Japanese file and its
-    exact audio stream, pick the dub file and its exact audio stream, and use
-    <b>▶</b> to hear each one before you commit to it.
+    <b>Assign automatically</b> fills in what it can from stream tags and
+    filenames, and leaves anything ambiguous blank rather than guessing. You
+    review every row, and <b>▶</b> plays the actual audio so you can confirm
+    by ear before running anything.
   </div>
 
-  <div class="card">
+  <div class="card tight">
     <div class="row">
-      <h2>Source episode library</h2>
-      <span class="spacer" style="flex:1"></span>
-      <button class="btn primary" id="btnAddPair">+ Add episode</button>
+      <label class="hint">Sources folder</label>
+      <select id="srcDirPick" style="min-width:190px"></select>
+      <input id="srcDir" class="mono" style="flex:1;min-width:200px">
+      <button class="btn" id="btnLoadSources">Load</button>
     </div>
-    <p class="hint" style="margin-top:4px">
-      One row per original episode: the Japanese audio used for alignment, and
-      the English dub taken from the same broadcast.
-    </p>
-    <div id="pairTable" style="margin-top:12px"></div>
+
+    <div class="row" style="margin-top:11px">
+      <span class="hint">How is your library laid out?</span>
+      <div class="segmented" id="modeSwitch">
+        <button data-mode="separate" class="active">
+          Separate files per language
+        </button>
+        <button data-mode="multitrack">
+          One file, multiple tracks
+        </button>
+      </div>
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn primary" id="btnAutoAssign">✨ Assign automatically</button>
+      <button class="btn sm" id="btnClearPairs">Clear</button>
+    </div>
+
+    <p class="hint" id="modeHint" style="margin-top:8px"></p>
+    <div id="assignReport" style="margin-top:8px"></div>
+  </div>
+
+  <!-- ── mode A: one language per file, pair them up ── -->
+  <div id="modeSeparate">
+    <div class="grid-pool">
+      <div class="card">
+        <div class="row">
+          <h2>Files found</h2>
+          <span class="spacer" style="flex:1"></span>
+          <label class="check hint"><input type="checkbox" id="hideAssigned" checked> Hide assigned</label>
+        </div>
+        <p class="hint" style="margin-top:4px">
+          Drag a file into a slot on the right, or click it and then click a slot.
+        </p>
+        <div id="filePool" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <h2>Episodes</h2>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn sm" id="btnAddPair">+ Add row</button>
+        </div>
+        <div id="pairTable" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── mode B: one file, several tracks to identify ── -->
+  <div id="modeMulti" style="display:none">
+    <div id="trackList"></div>
   </div>
 </section>
 
@@ -314,6 +408,14 @@ dialog .dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px
     <div id="pickList"></div>
   </div>
 </dialog>
+
+<div id="np">
+  <span class="eq">▶</span>
+  <span class="what" id="npWhat"></span>
+  <span class="tracks" id="npTracks"></span>
+  <span class="spacer" style="flex:1"></span>
+  <button class="btn sm" id="npStop">Stop</button>
+</div>
 
 <div id="toast"></div>
 <script src="/app.js"></script>

@@ -166,10 +166,38 @@ anything.
 
 | Step | What you decide |
 |---|---|
-| 1 · Source episodes | Pair each original episode's Japanese file+stream with its dub file+stream by hand. Measure the jpn→dub offset, or type one. |
+| 1 · Source episodes | Set up your source library — see below. Measure the jpn→dub offset, or type one. |
 | 2 · Edits | Confirm the edit's Japanese stream, tick the source episodes it uses, and drag across the waveform to mark the opening theme. |
 | 3 · Run | Check the plans, then queue the edits. They run one at a time with live progress. |
 | 4 · Review & fix | Timeline of the EDL coloured by source, flagged low-confidence cuts, nudge a cut, hear the seam in both languages, re-render without re-aligning. |
+
+### Two source layouts
+
+Step 1 has a switch for how your library is organised. Both end up in the same
+place internally, so the rest of the workflow is identical.
+
+| Layout | What you do |
+|---|---|
+| **Separate files per language** | Every file in the sources folder is listed. Drag one into the English slot and one into the Japanese slot of an episode row — or click a file, then click a slot. |
+| **One file, multiple tracks** | Each file's audio tracks are listed automatically. Mark one **Japanese** and one **English**. |
+
+**Assign automatically** fills in what it can and leaves the rest blank. It
+reads stream language tags and titles first, then filenames, and understands
+the usual episode conventions — `Episode 313`, `S21E1071`, `Show - 1071
+[1080p]`, `Ep.313`, `#313`, `E313`, and a bare trailing number. Years and
+resolutions are never mistaken for episode numbers, so `One Piece 1999 Episode
+313` matches on 313.
+
+It declines rather than guesses. Two files for the same episode with no tags
+and no language words in their names are left alone, because which is which is
+genuinely unknowable — and a wrong pairing only surfaces as English dialogue
+over the wrong scene twenty minutes into a render. Every skipped file is listed
+with the reason.
+
+**Hearing it.** ▶ next to any file or track plays it. A bar at the bottom shows
+what is playing, and for multi-track files it offers a switcher that jumps to
+another track *at the same moment*, so you can confirm two tracks are the same
+scene in different languages.
 
 **Passthrough ranges.** The opening theme is identical across every episode of
 an arc, so alignment there is a coin flip. Mark it in step 2 and that range
