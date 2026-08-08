@@ -1,5 +1,0 @@
-services:
-  opdub:
-    build: .
-    volumes:
-      - /home/nastypotato/podman/docker/data:/data
