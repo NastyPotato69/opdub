@@ -217,10 +217,11 @@ dialog .dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px
   <div class="card tight">
     <div class="row">
       <label class="hint">Sources folder</label>
-      <select id="srcDirPick" style="min-width:190px"></select>
-      <input id="srcDir" class="mono" style="flex:1;min-width:200px">
-      <button class="btn" id="btnLoadSources">Load</button>
+      <select id="srcDirPick" style="flex:1;min-width:240px"></select>
+      <button class="btn sm" id="srcBrowse">Browse…</button>
+      <button class="btn sm" id="btnLoadSources">Reload</button>
     </div>
+    <p class="hint mono" id="srcDirLabel" style="margin-top:5px"></p>
 
     <div class="row" style="margin-top:11px">
       <span class="hint">How is your library laid out?</span>
@@ -284,10 +285,11 @@ dialog .dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px
   <div class="card tight">
     <div class="row">
       <label class="hint">Edits folder</label>
-      <select id="editDirPick" style="min-width:190px"></select>
-      <input id="editDir" class="mono" style="flex:1;min-width:220px">
-      <button class="btn" id="btnLoadEdits">Load</button>
+      <select id="editDirPick" style="flex:1;min-width:240px"></select>
+      <button class="btn sm" id="editBrowse">Browse…</button>
+      <button class="btn sm" id="btnLoadEdits">Reload</button>
     </div>
+    <p class="hint mono" id="editDirLabel" style="margin-top:5px"></p>
   </div>
 
   <div id="editList"></div>
@@ -401,11 +403,15 @@ dialog .dlg-foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px
   </div>
   <div class="dlg-body">
     <div class="row" style="margin-bottom:10px">
-      <label class="hint">Folder</label>
-      <input id="pickDir" class="mono" style="flex:1">
-      <button class="btn sm" id="pickGo">Go</button>
+      <button class="btn sm" id="pickUp">↑ Up</button>
+      <span class="hint mono" id="pickDir" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
     </div>
     <div id="pickList"></div>
+  </div>
+  <div class="dlg-foot" id="pickFoot" style="display:none">
+    <span class="hint">Pick the folder you are currently in, or open one below.</span>
+    <span style="flex:1"></span>
+    <button class="btn primary" id="pickUse">Use this folder</button>
   </div>
 </dialog>
 

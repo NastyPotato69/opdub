@@ -48,3 +48,7 @@ input/**
 !input/**/
 !input/**/.gitkeep
 .env
+
+# UI test harness dependencies
+tests/ui/node_modules/
+tests/ui/package-lock.json

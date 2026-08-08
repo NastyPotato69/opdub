@@ -1,0 +1,8 @@
+{
+  "name": "opdub-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "Optional dev-only UI test harness. Not part of the app.",
+  "scripts": { "test": "node e2e.mjs" },
+  "devDependencies": { "jsdom": "^27" }
+}

@@ -13,9 +13,10 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
 const S = {
   config: null,
-  mediaDirs: [],  // folders under the media roots that hold media files
+  folders: [],    // every folder under the media roots, with media counts
   sourceMode: 'separate',   // 'separate' | 'multitrack'
   sourceDir: '',
+  editDir: '',
   sourceFiles: [],          // probed files in the sources folder
   pairs: [],      // source episodes, hand-paired
   edits: [],      // edits with stream / sources / passthrough
@@ -178,7 +179,7 @@ function saveLocal() {
       sourceDir: S.sourceDir,
       pairs: S.pairs.map(p => ({ ...p, jpn: stripProbe(p.jpn), dub: stripProbe(p.dub) })),
       edits: S.edits.map(e => ({ ...e, probe: null, wave: null })),
-      editDir: $('#editDir').value, projectName: S.projectName,
+      editDir: S.editDir, projectName: S.projectName,
     }));
   } catch (_) {}
 }
@@ -191,8 +192,7 @@ async function restoreLocal() {
   S.projectName = d.projectName || '';
   S.sourceMode = d.sourceMode === 'multitrack' ? 'multitrack' : 'separate';
   S.sourceDir = d.sourceDir || '';
-  if (S.sourceDir) $('#srcDir').value = S.sourceDir;
-  if (d.editDir) $('#editDir').value = d.editDir;
+  if (d.editDir) S.editDir = d.editDir;
   for (const e of (d.edits || [])) {
     try { e.probe = (await api('/api/probe', {
       method: 'POST', body: JSON.stringify({ paths: [e.path] }) })).files[0];
@@ -205,20 +205,40 @@ async function restoreLocal() {
 
 let pickResolve = null;
 
-async function pickFile(title, startDir) {
+let pickMode = 'file';   // 'file' | 'dir'
+let pickHere = '';       // folder currently shown, for "Use this folder"
+
+async function pickPath(title, startDir, mode = 'file') {
+  pickMode = mode;
   $('#pickTitle').textContent = title;
-  $('#pickDir').value = startDir || S.config.roots[0]?.path || '';
-  await browseInto($('#pickDir').value);
+  $('#pickFoot').style.display = mode === 'dir' ? '' : 'none';
+  await browseInto(startDir || S.config.roots[0]?.path || '');
   $('#pickDlg').showModal();
   return new Promise(res => { pickResolve = res; });
 }
+
+const pickFile = (title, startDir) => pickPath(title, startDir, 'file');
+const pickFolder = (title, startDir) => pickPath(title, startDir, 'dir');
+
+function closePick(value) {
+  $('#pickDlg').close();
+  const r = pickResolve; pickResolve = null;
+  if (r) r(value ?? null);
+}
+
+$('#pickUse').onclick = () => closePick(pickHere);
+$('#pickUp').onclick = () => {
+  const up = pickHere.replace(/\/[^/]+\/?$/, '') || '/';
+  browseInto(up).catch(() => toast('Cannot go above the media roots', 'bad'));
+};
 
 async function browseInto(dir) {
   const list = $('#pickList');
   list.innerHTML = '<p class="empty">Loading…</p>';
   try {
     const d = await api(`/api/browse?dir=${encodeURIComponent(dir)}`);
-    $('#pickDir').value = d.dir;
+    pickHere = d.dir;
+    $('#pickDir').textContent = d.dir;
     list.innerHTML = '';
 
     const roots = document.createElement('div');
@@ -229,9 +249,9 @@ async function browseInto(dir) {
       b.onclick = () => browseInto(r.path);
       roots.append(b);
     }
-    // Shortcuts straight to nested folders that actually hold media, so a
-    // deep input tree does not have to be clicked through one level at a time.
-    for (const m of S.mediaDirs.slice(0, 12)) {
+    // Shortcuts straight to nested folders that hold media, so a deep input
+    // tree does not have to be clicked through one level at a time.
+    for (const m of S.folders.filter(f => f.files).slice(0, 12)) {
       if (m.rel === '.') continue;
       const b = document.createElement('button');
       b.className = 'btn sm';
@@ -257,7 +277,8 @@ async function browseInto(dir) {
       tr.innerHTML = `<td>🎬 ${esc(f.name)}</td>` +
         `<td class="hint mono">${(f.size / 1048576).toFixed(0)} MB</td>`;
       tr.style.cursor = 'pointer';
-      tr.onclick = () => { $('#pickDlg').close(); pickResolve?.(f.path); pickResolve = null; };
+      if (pickMode === 'dir') { tr.style.cursor = 'default'; tr.style.opacity = '.55'; }
+      else tr.onclick = () => closePick(f.path);
       tb.append(tr);
     }
     t.append(tb);
@@ -270,8 +291,7 @@ async function browseInto(dir) {
   }
 }
 
-$('#pickGo').onclick = () => browseInto($('#pickDir').value);
-$('#pickClose').onclick = () => { $('#pickDlg').close(); pickResolve?.(null); pickResolve = null; };
+$('#pickClose').onclick = () => closePick(null);
 $('#pickDlg').addEventListener('close', () => { pickResolve?.(null); pickResolve = null; });
 
 async function probeOne(path) {
@@ -799,15 +819,26 @@ function offsetUI(pair) {
 
 // ── loading the folder, and auto-assign ──
 
-$('#srcDirPick').onchange = () => {
+$('#srcDirPick').onchange = async () => {
   const v = $('#srcDirPick').value;
+  if (v === '__browse__') {
+    $('#srcDirPick').value = S.sourceDir || '';
+    const p = await pickFolder('Choose the sources folder', S.sourceDir);
+    if (p) { setFolder('sources', p); await $('#btnLoadSources').onclick(); }
+    return;
+  }
   if (!v) return;
-  $('#srcDir').value = v;
-  $('#btnLoadSources').click();
+  setFolder('sources', v);
+  await $('#btnLoadSources').onclick();
+};
+
+$('#srcBrowse').onclick = async () => {
+  const p = await pickFolder('Choose the sources folder', S.sourceDir);
+  if (p) { setFolder('sources', p); await $('#btnLoadSources').onclick(); }
 };
 
 $('#btnLoadSources').onclick = async () => {
-  const dir = $('#srcDir').value.trim();
+  const dir = (S.sourceDir || '').trim();
   if (!dir) { toast('Pick a sources folder first', 'bad'); return; }
   const btn = $('#btnLoadSources');
   btn.disabled = true; btn.textContent = 'Loading…';
@@ -816,7 +847,7 @@ $('#btnLoadSources').onclick = async () => {
     const probes = await api('/api/probe', {
       method: 'POST', body: JSON.stringify({ paths: d.files.map(f => f.path) }) });
     S.sourceFiles = probes.files;
-    S.sourceDir = d.dir;
+    setFolder('sources', d.dir);
 
     // Re-attach probe data to any pairs restored from a saved setup.
     for (const p of S.pairs) {
@@ -825,11 +856,16 @@ $('#btnLoadSources').onclick = async () => {
       }
     }
     saveLocal(); renderPairs();
-    toast(`${probes.files.length} file(s) in ${d.dir}`, 'ok');
+    if (!probes.files.length) {
+      toast(`No media in ${d.dir} — put your source episodes there, ` +
+            `or pick another folder`, 'info', 7000);
+    } else {
+      toast(`${probes.files.length} file(s) in ${d.dir}`, 'ok');
+    }
   } catch (e) {
     toast(e.message, 'bad');
   } finally {
-    btn.disabled = false; btn.textContent = 'Load';
+    btn.disabled = false; btn.textContent = 'Reload';
   }
 };
 
@@ -908,37 +944,88 @@ function renderAssignReport(r) {
 
 // ────────────────────────── step 2: edits ───────────────────────────
 
-async function loadMediaDirs() {
+/** Populate both folder dropdowns. Every folder under the roots is listed,
+ *  indented to read like a tree, so a path never has to be typed. */
+async function loadFolders() {
   try {
-    S.mediaDirs = (await api('/api/media-dirs')).dirs || [];
-  } catch (_) { S.mediaDirs = []; }
+    S.folders = (await api('/api/folders')).folders || [];
+  } catch (_) { S.folders = []; }
 
   const multiRoot = S.config.roots.length > 1;
-  const opts = '<option value="">— folders with media —</option>' +
-    S.mediaDirs.map(m => {
-      // With one root, the relative path is the useful label; with several,
-      // show the root too so two "edits" folders cannot be confused.
-      const label = m.rel === '.' ? m.root : (multiRoot ? `${m.root}/${m.rel}` : m.rel);
-      return `<option value="${esc(m.path)}">${esc(label)} · ${m.files}</option>`;
-    }).join('');
+  const opts = S.folders.map(f => {
+    const pad = '  '.repeat(f.depth);
+    const base = f.rel === '.'
+      ? (multiRoot ? f.root : f.root.split('/').pop() || f.root)
+      : f.name;
+    const count = f.files ? ` · ${f.files} file${f.files === 1 ? '' : 's'}` : ' · empty';
+    return `<option value="${esc(f.path)}" title="${esc(f.path)}">` +
+           `${pad}${esc(base)}${count}</option>`;
+  }).join('') + '<option value="__browse__">Browse…</option>';
 
-  for (const [sel, input] of [['#editDirPick', '#editDir'], ['#srcDirPick', '#srcDir']]) {
+  for (const [sel, key] of [['#editDirPick', 'editDir'], ['#srcDirPick', 'sourceDir']]) {
     const el = $(sel);
     el.innerHTML = opts;
-    if (S.mediaDirs.some(m => m.path === $(input).value)) el.value = $(input).value;
+    if (S[key]) el.value = S[key];
   }
 }
 
-$('#editDirPick').onchange = () => {
+/** Conventional layout first: <root>/sources and <root>/edits. Falls back to
+ *  a name that merely contains the word, then to whichever folder holds the
+ *  most media, then to the root itself. */
+function defaultFolder(kind) {
+  if (!S.folders.length) return '';
+  const want = kind === 'sources' ? 'sources' : 'edits';
+  const alt = kind === 'sources' ? /sourc|orig|raw/i : /edit|pace|fan/i;
+
+  const exact = S.folders.find(f => f.name.toLowerCase() === want);
+  if (exact) return exact.path;
+
+  const near = S.folders.filter(f => f.rel !== '.' && alt.test(f.name));
+  if (near.length) return near.sort((a, b) => b.files - a.files)[0].path;
+
+  const withMedia = S.folders.filter(f => f.files);
+  if (withMedia.length) return withMedia.sort((a, b) => b.files - a.files)[0].path;
+
+  return S.folders[0].path;
+}
+
+function setFolder(kind, path) {
+  if (!path) return;
+  if (kind === 'sources') {
+    S.sourceDir = path;
+    $('#srcDirPick').value = S.folders.some(f => f.path === path) ? path : '';
+    $('#srcDirLabel').textContent = path;
+  } else {
+    S.editDir = path;
+    $('#editDirPick').value = S.folders.some(f => f.path === path) ? path : '';
+    $('#editDirLabel').textContent = path;
+  }
+  saveLocal();
+}
+
+$('#editDirPick').onchange = async () => {
   const v = $('#editDirPick').value;
+  if (v === '__browse__') {
+    $('#editDirPick').value = S.editDir || '';
+    const p = await pickFolder('Choose the edits folder', S.editDir);
+    if (p) { setFolder('edits', p); await $('#btnLoadEdits').onclick(); }
+    return;
+  }
   if (!v) return;
-  $('#editDir').value = v;
-  $('#btnLoadEdits').click();
+  setFolder('edits', v);
+  await $('#btnLoadEdits').onclick();
+};
+
+$('#editBrowse').onclick = async () => {
+  const p = await pickFolder('Choose the edits folder', S.editDir);
+  if (p) { setFolder('edits', p); await $('#btnLoadEdits').onclick(); }
 };
 
 $('#btnLoadEdits').onclick = async () => {
-  const dir = $('#editDir').value.trim();
-  if (!dir) return;
+  const dir = (S.editDir || '').trim();
+  if (!dir) { toast('Pick an edits folder first', 'bad'); return; }
+  const btn = $('#btnLoadEdits');
+  btn.disabled = true; btn.textContent = 'Loading…';
   try {
     const d = await api(`/api/browse?dir=${encodeURIComponent(dir)}`);
     const known = new Set(S.edits.map(e => e.path));
@@ -950,9 +1037,19 @@ $('#btnLoadEdits').onclick = async () => {
       S.edits.push({ path: pr.path, name: pr.name, probe: pr, stream: null,
                      sources: [], passthrough: [], selected: false, wave: null });
     }
+    setFolder('edits', d.dir);
     saveLocal(); renderEdits();
-    toast(`${d.files.length} file(s) in ${d.dir}`, 'ok');
-  } catch (e) { toast(e.message, 'bad'); }
+    if (!probes.files.length) {
+      toast(`No media in ${d.dir} — put your edits there, or pick another ` +
+            `folder`, 'info', 7000);
+    } else {
+      toast(`${probes.files.length} file(s) in ${d.dir}`, 'ok');
+    }
+  } catch (e) {
+    toast(e.message, 'bad');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Reload';
+  }
 };
 
 function refreshEditCards() { renderEdits(); }
@@ -1209,6 +1306,7 @@ function waveCanvas(e) {
     const dpr = window.devicePixelRatio || 1;
     cv.width = rect.width * dpr; cv.height = 88 * dpr;
     const g = cv.getContext('2d');
+    if (!g) return;           // no canvas: the numeric controls still work
     g.scale(dpr, dpr);
     const W = rect.width, H = 88;
     g.clearRect(0, 0, W, H);
@@ -1558,6 +1656,10 @@ function drawTimeline() {
   const dpr = window.devicePixelRatio || 1;
   cv.width = rect.width * dpr; cv.height = 56 * dpr;
   const g = cv.getContext('2d');
+  // A drawing failure must not take the segment list and inspector with it —
+  // renderReview() calls this first, and those are the views you actually fix
+  // cuts from.
+  if (!g) return;
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   const W = rect.width, H = 56, dur = S.edl.duration || 1;
   g.clearRect(0, 0, W, H);
@@ -1799,7 +1901,7 @@ $('#btnSaveProject').onclick = async () => {
         pairs: S.pairs.map(p => ({ ...p, jpn: p.jpn && { ...p.jpn, probe: null },
                                    dub: p.dub && { ...p.dub, probe: null } })),
         edits: S.edits.map(e => ({ ...e, probe: null, wave: null })),
-        editDir: $('#editDir').value,
+        editDir: S.editDir, sourceDir: S.sourceDir, sourceMode: S.sourceMode,
       } }),
     });
     S.projectName = name;
@@ -1820,7 +1922,9 @@ $('#btnLoadProject').onclick = async () => {
     const d = await api(`/api/project?name=${encodeURIComponent(name)}`);
     S.pairs = d.pairs || [];
     S.edits = [];
-    if (d.editDir) $('#editDir').value = d.editDir;
+    if (d.sourceMode) S.sourceMode = d.sourceMode;
+    if (d.editDir) setFolder('edits', d.editDir);
+    if (d.sourceDir) setFolder('sources', d.sourceDir);
     for (const e of (d.edits || [])) {
       try { e.probe = await probeOne(e.path); } catch (_) { e.probe = null; }
       e.wave = null;
@@ -1828,22 +1932,14 @@ $('#btnLoadProject').onclick = async () => {
     }
     S.projectName = name;
     $('#projectLabel').textContent = name;
+    // Re-probes the sources folder, which re-attaches probe data to the pairs.
+    if (S.sourceDir) await $('#btnLoadSources').onclick();
     saveLocal(); renderPairs(); renderEdits();
     toast(`Loaded "${name}"`, 'ok');
   } catch (e) { toast(e.message, 'bad'); }
 };
 
 // ─────────────────────────────── boot ───────────────────────────────
-
-/** Pick a discovered media folder whose name matches, else the fullest one.
- *  Only ever used to prefill a folder box the operator can override. */
-function guessDir(pattern) {
-  if (!S.mediaDirs.length) return null;
-  const named = S.mediaDirs.filter(m => pattern.test(m.rel) || pattern.test(m.path));
-  const pool = named.length ? named : (S.mediaDirs.length === 1 ? S.mediaDirs : []);
-  if (!pool.length) return null;
-  return pool.slice().sort((a, b) => b.files - a.files)[0].path;
-}
 
 function showStep(name) {
   $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.step === name));
@@ -1868,24 +1964,21 @@ window.addEventListener('resize', () => {
   $('#rootsLabel').textContent =
     S.config.roots.map(r => r.path + (r.exists ? '' : ' (missing)')).join('  ·  ') +
     `   →   ${S.config.out}`;
-  if (!$('#editDir').value) $('#editDir').value = S.config.roots[0]?.path || '';
-
   await restoreLocal();
   if (S.projectName) $('#projectLabel').textContent = S.projectName;
   renderPairs(); renderEdits();
-  await loadMediaDirs();
+  await loadFolders();
 
-  // Preselect a plausible folder so neither tab opens empty. This only fills
-  // in a text box the operator can change — it decides nothing about content.
-  if (!$('#srcDir').value) $('#srcDir').value = guessDir(/sourc|orig|raw/i) || '';
-  if (!$('#editDir').value || $('#editDir').value === S.config.roots[0]?.path) {
-    $('#editDir').value = guessDir(/edit|pace|fan/i) || $('#editDir').value;
-  }
+  // Default to the conventional layout — <root>/sources and <root>/edits —
+  // so both tabs open on the right folder without anyone typing a path.
+  setFolder('sources', S.sourceDir || defaultFolder('sources'));
+  setFolder('edits', S.editDir || defaultFolder('edits'));
 
-  // Re-probing the sources folder fills the file pool and re-attaches probe
-  // data to pairs restored from storage, which is what the drag-and-drop and
-  // the track lists are drawn from. Server-side probe caching keeps it cheap.
-  if ($('#srcDir').value) await $('#btnLoadSources').onclick();
+  // Loading the sources folder fills the file pool and re-attaches probe data
+  // to pairs restored from storage, which is what the drag-and-drop and the
+  // track lists are drawn from. Server-side probe caching keeps it cheap.
+  if (S.sourceDir) await $('#btnLoadSources').onclick();
+  if (S.editDir) await $('#btnLoadEdits').onclick();
 
   await loadJobs(); await loadEdlList();
   connectEvents();

@@ -199,6 +199,11 @@ what is playing, and for multi-track files it offers a switcher that jumps to
 another track *at the same moment*, so you can confirm two tracks are the same
 scene in different languages.
 
+**Folders.** Both tabs open on the conventional layout — `input/sources` and
+`input/edits` — and load themselves. Every folder under your media roots is in
+the dropdown with its file count, and **Browse…** opens a file browser for
+anything else. You never type a path.
+
 **Passthrough ranges.** The opening theme is identical across every episode of
 an arc, so alignment there is a coin flip. Mark it in step 2 and that range
 keeps the edit's own audio: no matching is attempted and nothing is replaced.
@@ -388,6 +393,10 @@ fade. The default is 0, which is a hard cut.
 .venv/bin/python -m pytest tests -q
 .venv/bin/python score.py fixtures/ground_truth.json --edl-dir out/edls
 ```
+
+There is also an optional UI end-to-end test that drives the real frontend
+against a running server with real media — see `tests/ui/README.md`. It is
+dev-only; the app itself still has no build step and no JS dependencies.
 
 `score.py` writes `metrics.json` and fails if any gate regresses. Regenerate
 the fixtures with `python make_fixtures.py fixtures --sources 6 --edits 3`.

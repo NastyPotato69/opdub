@@ -537,8 +537,13 @@ def api_browse(dir: str) -> dict:
 MEDIA_SCAN_DEPTH = 4
 
 
-def _dirs_with_media(root: Path, depth: int) -> list[dict]:
-    """Every directory at or under root that directly contains media files."""
+def _walk_folders(root: Path, depth: int) -> list[dict]:
+    """Every directory at or under root, with how much media each holds.
+
+    Empty folders are included deliberately: a fresh checkout has an empty
+    input/sources, and it still has to be selectable in the UI. Reporting the
+    media count lets the picker show which ones actually have anything.
+    """
     found: list[dict] = []
 
     def walk(d: Path, level: int) -> None:
@@ -552,21 +557,24 @@ def _dirs_with_media(root: Path, depth: int) -> list[dict]:
             if p.name.startswith("."):
                 continue
             if p.is_dir():
-                subdirs.append(p)
-            elif p.suffix.lower() in MEDIA_EXTS:
-                n += 1
-        if n:
-            found.append({
-                "path": str(d),
-                "root": str(root),
-                "rel": "." if d == root else str(d.relative_to(root)),
-                "files": n,
-            })
-        if level < depth:
-            for p in subdirs:
                 # Never descend into the output tree if it sits inside a root.
                 if p.resolve() == OUT_DIR:
                     continue
+                subdirs.append(p)
+            elif p.suffix.lower() in MEDIA_EXTS:
+                n += 1
+
+        found.append({
+            "path": str(d),
+            "root": str(root),
+            "rel": "." if d == root else str(d.relative_to(root)),
+            "name": d.name,
+            "files": n,
+            "subdirs": len(subdirs),
+            "depth": level,
+        })
+        if level < depth:
+            for p in subdirs:
                 walk(p, level + 1)
 
     if root.is_dir():
@@ -574,15 +582,15 @@ def _dirs_with_media(root: Path, depth: int) -> list[dict]:
     return found
 
 
-@app.get("/api/media-dirs")
-async def api_media_dirs() -> dict:
-    """Folders holding media, so nested input trees are discoverable in the UI."""
+@app.get("/api/folders")
+async def api_folders() -> dict:
+    """Every folder under the media roots, so nothing has to be typed by hand."""
     def scan() -> list[dict]:
         out: list[dict] = []
         for root in MEDIA_ROOTS:
-            out.extend(_dirs_with_media(root, MEDIA_SCAN_DEPTH))
+            out.extend(_walk_folders(root, MEDIA_SCAN_DEPTH))
         return out
-    return {"dirs": await asyncio.to_thread(scan)}
+    return {"folders": await asyncio.to_thread(scan)}
 
 
 @app.post("/api/probe")
