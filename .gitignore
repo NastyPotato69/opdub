@@ -38,3 +38,6 @@ metrics.json
 .venv/
 venv/
 .env
+
+# Install manifest (written by install.sh, read by uninstall.sh)
+.opdub-install.manifest
