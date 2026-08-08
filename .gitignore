@@ -1,5 +1,40 @@
+# Media files — never commit
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.wav
+*.aac
+*.mp3
+*.flac
+
+# Generated outputs
+out/
+fixtures/
+
+# Local media directories (mount points — not committed)
+edits/
+sources/
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-out/
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Local project notes and diagnostics
+CLAUDE.md
+diagnose_mismatch.py
+probe_workspace.py
+session*.txt
+*.log
 metrics.json
+
+# Editor / OS
+.DS_Store
+.venv/
+venv/
+.env

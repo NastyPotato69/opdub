@@ -1,0 +1,10 @@
+services:
+  opdub:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount your media directory (containing your edits and source episodes)
+      # to /data inside the container.  Outputs are written to /data/out/.
+      - /path/to/your/media:/data
+    restart: unless-stopped
