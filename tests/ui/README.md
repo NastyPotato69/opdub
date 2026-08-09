@@ -49,8 +49,8 @@ entire point, so stage one:
 
 ```bash
 cp fixtures/sources/src_00.mkv \
-  "/tmp/ui/input/sources/[Erai-raws] One Piece - 0384 ~ 0385 (1080p AV1 10bit \
-Multiple Subtitle) [Enies Lobby Arc, Complete Batch Release] [F00DCAFE].mkv"
+  "/tmp/ui/input/sources/[Some-Group] Some Show - 0384 ~ 0385 (1080p AV1 10bit \
+Multiple Subtitle) [Second Arc, Complete Batch Release] [F00DCAFE].mkv"
 
 cd tests/ui && npm install
 CHROME=/usr/bin/chromium BASE=http://127.0.0.1:8091 npm run layout

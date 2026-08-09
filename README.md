@@ -1,53 +1,75 @@
 # opdub
 
-Adds a correctly-timed English dub audio track to fan-edited video episodes.
+Adds a correctly-timed dub audio track to fan-edited video episodes.
 
-Fan edits reassemble footage from multiple source episodes into a tighter cut.
-`opdub` figures out which moment of which source episode each moment of the
-edit came from, stitches the corresponding dub segments together, and muxes
-the result into the video — without re-encoding anything.
+A fan edit reassembles footage from several source episodes into a tighter cut,
+and often ships with the original-language audio only. `opdub` works out which
+moment of which source episode every moment of the edit came from, stitches the
+matching dub segments together, and muxes the result into the video — without
+re-encoding anything.
+
+**What you need to supply:** the edit, and the source episodes it was cut from,
+with a dub track available for those sources. Everything else is derived.
+
+---
 
 ## Contents
 
-- [Install](#install)
-  - [A. Install script](#a-install-script) — recommended, no root needed
-  - [B. Docker](#b-docker) — media mounted read-only
-  - [C. Manual install](#c-manual-install) — you already have Python 3.11+ and ffmpeg
-  - [D. No root and no system Python](#d-no-root-and-no-system-python) — what the script does, by hand
-  - [Uninstalling](#uninstalling)
-- [Web UI](#web-ui)
+**Tutorial** — start here, in order
+
+1. [Install](#step-1--install)
+2. [Put your media where opdub can see it](#step-2--put-your-media-where-opdub-can-see-it)
+3. [Start the app](#step-3--start-the-app)
+4. [Set up your source library](#step-4--set-up-your-source-library)
+5. [Describe each edit](#step-5--describe-each-edit)
+6. [Run it](#step-6--run-it)
+7. [Review and fix](#step-7--review-and-fix)
+
+**Reference**
+
 - [How it works](#how-it-works)
-- [CLI](#cli)
-  - [run](#run) — align from a plan
-  - [align](#align) — align by auto-detection
-  - [render](#render) — EDL to WAV
-  - [mux](#mux) — WAV into the video
-- [The EDL](#the-edl)
+- [Command line](#command-line)
+- [The EDL format](#the-edl-format)
+- [Configuration](#configuration)
 - [File layout](#file-layout)
-- [Tips](#tips)
+- [Troubleshooting](#troubleshooting)
+- [Uninstalling](#uninstalling)
+- [Development](#development)
 
-## Install
+---
 
-Requirements are Python 3.11+, `numpy`/`scipy`, and `ffmpeg` on your PATH.
-Pick whichever path below matches your machine.
+# Tutorial
 
-| Path | Use it when | Root needed |
+## Step 1 · Install
+
+You need Python 3.11+, `numpy`/`scipy`, and `ffmpeg` on your `PATH`. Pick one
+of the four routes below — **A** if you are unsure, **B** if you would rather
+run everything in a container.
+
+| Route | Use it when | Root needed |
 |---|---|---|
 | [A. Install script](#a-install-script) | Most cases. Installs only what is missing. | no |
 | [B. Docker](#b-docker) | You want isolation and read-only media by construction. | docker only |
-| [C. Manual install](#c-manual-install) | You already have Python 3.11+ and ffmpeg. | no |
-| [D. No root and no system Python](#d-no-root-and-no-system-python) | Locked-down box; you want to see every step. | no |
+| [C. Manual](#c-manual) | You already have Python 3.11+ and ffmpeg. | no |
+| [D. By hand, no root](#d-by-hand-no-root) | Locked-down box; you want to see every step. | no |
 
 ### A. Install script
 
 ```bash
-./install.sh            # installs only what is missing
-./install.sh --verify   # ...then runs the tests and the fixture scorer
+git clone https://github.com/NastyPotato69/opdub.git
+cd opdub
+./install.sh
 ```
 
-It checks for ffmpeg and a usable Python, installs whichever is absent, and
-creates a virtualenv at `.venv`. Nothing goes outside your home directory and
-root is never required.
+It checks for ffmpeg and a usable Python, installs whichever is missing, and
+creates a virtualenv at `.venv`. Nothing is written outside your home
+directory and root is never required.
+
+Add `--verify` to run the test suite and score the bundled fixtures afterwards:
+
+```bash
+./install.sh --verify
+```
 
 | Option | Meaning |
 |---|---|
@@ -56,73 +78,67 @@ root is never required.
 | `--skip-ffmpeg` / `--skip-python` | Leave that component alone |
 | `--no-dev` | Skip `pytest` |
 | `--force` | Reinstall components that are already present |
-| `--verify` | Run the test suite and score the fixtures afterwards |
+| `--verify` | Run the tests and score the fixtures afterwards |
 | `--dry-run` | Print the plan, change nothing |
 
 Everything it installs is recorded in `.opdub-install.manifest`, which is what
-makes the uninstall exact. If ffmpeg or Python were already on the machine,
-they are not recorded and never touched.
+makes [uninstalling](#uninstalling) exact. An ffmpeg or Python that was already
+on the machine is not recorded and never touched.
 
-On macOS the script will not download binaries — install ffmpeg with
-`brew install ffmpeg` first, then re-run it.
+> **macOS:** the script will not download binaries. Run `brew install ffmpeg`
+> first, then re-run it.
+
+Now go to [step 2](#step-2--put-your-media-where-opdub-can-see-it).
 
 ### B. Docker
 
-Two volumes, both inside the project folder — one in, one out:
-
-```
-input/     → /input  (read-only)    your media
-out/       → /out    (writable)     everything opdub produces
-```
-
-Put your media anywhere under `input/`; nest it however you like, because the
-UI discovers folders that contain media rather than assuming a layout. A
-starting shape is `input/edits/` and `input/sources/`, and both folders ship
-empty in the repo.
-
 ```bash
+git clone https://github.com/NastyPotato69/opdub.git
+cd opdub
 docker compose up --build
 ```
 
 The UI is on <http://localhost:8000>.
 
-**Upgrading.** The frontend is baked into the image (`COPY opdub ./opdub`), so
-a `git pull` on its own changes nothing you can see — the container keeps
-serving the UI from the image it was built with. Always rebuild:
+Two volumes are mounted, both inside the project folder:
 
-```bash
-git pull && docker compose up -d --build
+```
+input/  → /input  (read-only)   your media
+out/    → /out    (writable)    everything opdub produces
 ```
 
-The header carries a build marker — `ui b87aad12` — hashed from the frontend
-files the server is serving. If it does not change after an upgrade, the image
-was not rebuilt. If it turns red and says `stale`, the page in front of you is
-a cached copy older than the server's: reload with <kbd>ctrl+shift+R</kbd>.
-
 `input/` is mounted `:ro`. That read-only flag — not a convention the code is
-trusted to follow — is what guarantees source episodes are never modified.
+trusted to follow — is what guarantees your source media is never modified.
 
-If your media cannot live in the project folder, point the mounts elsewhere
-with a `.env` file next to `docker-compose.yml`:
+If your media cannot live in the project folder, point the mounts somewhere
+else with a `.env` file next to `docker-compose.yml`:
 
 ```ini
-OPDUB_INPUT=/mnt/media/onepiece
+OPDUB_INPUT=/mnt/media/my-show
 OPDUB_OUTPUT=/mnt/big-disk/opdub-out
 ```
 
-### C. Manual install
+> **Upgrading matters here.** The frontend is baked into the image
+> (`COPY opdub ./opdub`), so `git pull` on its own changes nothing you can see.
+> Always rebuild: `git pull && docker compose up -d --build`. See
+> [Troubleshooting](#the-ui-did-not-change-after-an-upgrade).
+
+Now go to [step 2](#step-2--put-your-media-where-opdub-can-see-it).
+
+### C. Manual
 
 If you already have Python 3.11+ and ffmpeg:
 
 ```bash
+git clone https://github.com/NastyPotato69/opdub.git
+cd opdub
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn opdub.server:app --port 8000
 ```
 
-### D. No root and no system Python
+### D. By hand, no root
 
-This is exactly what `install.sh` automates, written out so you can see it:
+Exactly what `install.sh` automates, written out so you can see it:
 
 ```bash
 # 1. a Python that does not exist on the system yet
@@ -140,119 +156,203 @@ cp ffmpeg-*/bin/ffmpeg ffmpeg-*/bin/ffprobe "$HOME/.local/bin/"
 
 Use `linuxarm64` instead of `linux64` on ARM.
 
-### Uninstalling
+---
 
-```bash
-./uninstall.sh              # remove what install.sh added, keep out/
-./uninstall.sh --dry-run    # list it first
-./uninstall.sh --purge-output   # also delete out/ (asks first)
+## Step 2 · Put your media where opdub can see it
+
+Two trees ship with the repo, both empty:
+
+```
+input/          your media — never written to
+├── edits/      the fan edits you want dubbed
+└── sources/    the original episodes they were cut from
+out/            everything opdub produces
 ```
 
-It reads `.opdub-install.manifest` and removes only what is listed there. An
-ffmpeg or Python that predates the install is left alone.
-
-The manifest is treated as untrusted input: a virtualenv is only deleted if it
-actually contains a `pyvenv.cfg`, and a binary only if it is named `ffmpeg`,
-`ffprobe`, `uv` or `uvx`. **Source media is never deleted under any flag** —
-without that check, a media directory sitting inside the repo root would look
-like a legitimate target.
-
-`out/` — your EDLs, renders and saved setups — is kept unless you pass
-`--purge-output`, and even then it asks.
-
-## Web UI
+Copy your files in:
 
 ```bash
-OPDUB_MEDIA=/workspace/onepace:/workspace/onepiece \
-OPDUB_OUT=/workspace/out \
-    .venv/bin/uvicorn opdub.server:app --port 8000
+cp /path/to/your/edits/*.mkv     input/edits/
+cp /path/to/your/originals/*.mkv input/sources/
 ```
 
-Then open <http://localhost:8000>.
+**The layout is a suggestion, not a requirement.** Nest it however you like —
+`input/season-2/`, `input/arc-11/sources/` — because the app lists folders that
+contain media rather than expecting fixed names. Symlinks work too, if you would
+rather not copy hundreds of gigabytes:
 
-The UI exists to take the guesswork out of the run. Everything the pipeline
-used to infer — which file holds Japanese audio, which audio stream is the
-dub, which two files are the same episode, which sources an edit was cut
-from, where the opening theme sits — is an explicit input you make, with a
-**▶ listen** button next to each one so you can check by ear before running
-anything.
+```bash
+ln -s /mnt/media/my-show/originals input/sources
+```
 
-| Step | What you decide |
+**Your sources need a dub somewhere.** Either as separate files per language, or
+as one file with several audio tracks. Both are supported and you will pick
+which in [step 4](#step-4--set-up-your-source-library).
+
+---
+
+## Step 3 · Start the app
+
+If you used Docker, it is already running on <http://localhost:8000>. Otherwise:
+
+```bash
+.venv/bin/uvicorn opdub.server:app --port 8000
+```
+
+Then open <http://localhost:8000>. By default it reads `./input` and writes
+`./out` relative to where you started it, so run it from the project folder. To
+point elsewhere, see [Configuration](#configuration).
+
+You should see four numbered tabs. They are meant to be worked through in
+order, and the badge on each shows how many items are ready.
+
+**The guiding idea:** the app never quietly decides anything. Which file holds
+which language, which audio stream is the dub, which two files are the same
+episode, which sources an edit was cut from, where the opening theme sits —
+each is something you state, with a **▶** button next to it so you can confirm
+by ear first. A wrong guess here surfaces as dialogue over the wrong scene
+twenty minutes into a render, which is why nothing is guessed.
+
+---
+
+## Step 4 · Set up your source library
+
+**Tab 1 · Source episodes.** The goal is a list of episodes where each one
+knows its original-language track (used to find where things are) and its dub
+track (used to build the new audio).
+
+**First, tell it how your library is laid out** using the switch near the top:
+
+| Your layout | What you do |
 |---|---|
-| 1 · Source episodes | Set up your source library — see below. Measure the jpn→dub offset, or type one. |
-| 2 · Edits | Confirm the edit's Japanese stream, tick the source episodes it uses, and drag across the waveform to mark the opening theme. Every edit in the folder starts ticked; shift+scroll zooms the waveform, alt+drag pans it. |
-| 3 · Run | Check the plans, then queue the edits. They run one at a time with live progress. |
-| 4 · Review & fix | Timeline of the EDL coloured by source, flagged low-confidence cuts, nudge a cut, hear the seam in both languages, re-render without re-aligning. |
+| **Separate files per language** | Every file is listed on the left. Drag one into the dub slot and one into the original-language slot of an episode row — or click a file, then click a slot. |
+| **One file, multiple tracks** | Each file's audio tracks are listed. Mark one as the original language and one as the dub. |
 
-### Two source layouts
-
-Step 1 has a switch for how your library is organised. Both end up in the same
-place internally, so the rest of the workflow is identical.
-
-| Layout | What you do |
-|---|---|
-| **Separate files per language** | Every file in the sources folder is listed. Drag one into the English slot and one into the Japanese slot of an episode row — or click a file, then click a slot. |
-| **One file, multiple tracks** | Each file's audio tracks are listed automatically. Mark one **Japanese** and one **English**. |
-
-**Assign automatically** fills in what it can and leaves the rest blank. It
-reads stream language tags and titles first, then filenames, and understands
-the usual episode conventions — `Episode 313`, `S21E1071`, `Show - 1071
-[1080p]`, `Ep.313`, `#313`, `E313`, and a bare trailing number. Years and
-resolutions are never mistaken for episode numbers, so `One Piece 1999 Episode
-313` matches on 313.
+**Then press ✨ Assign automatically.** It reads stream language tags and
+titles first, then filenames, and understands the usual episode conventions —
+`Episode 313`, `S21E1071`, `Show - 1071 [1080p]`, `Ep.313`, `#313`, `E313`, and
+a bare trailing number. Years and resolutions are never mistaken for episode
+numbers, so `Some Show 1999 Episode 313` matches on 313.
 
 It declines rather than guesses. Two files for the same episode with no tags
 and no language words in their names are left alone, because which is which is
-genuinely unknowable — and a wrong pairing only surfaces as English dialogue
-over the wrong scene twenty minutes into a render. Every skipped file is listed
-with the reason.
+genuinely unknowable. Every skipped file is listed with the reason.
 
-**Hearing it.** ▶ next to any file or track plays it. A bar at the bottom shows
-what is playing, and for multi-track files it offers a switcher that jumps to
-another track *at the same moment*, so you can confirm two tracks are the same
-scene in different languages.
+**Check its work.** The status line counts episodes ready, rows still
+incomplete, and files not yet assigned — it updates as you drag, so it is a
+live tally rather than a report. Press **▶** on any file or track to hear it.
+The bar at the bottom shows what is playing; for multi-track files it offers a
+switcher that jumps to another track *at the same moment*, which is the fastest
+way to confirm two tracks are the same scene in different languages. The scrub
+bar spans the whole track, so if playback lands in silence you can drag
+somewhere with dialogue.
 
-**Folders.** Both tabs open on the conventional layout — `input/sources` and
-`input/edits` — and load themselves. Every folder under your media roots is in
-the dropdown with its file count, and **Browse…** opens a file browser for
-anything else. You never type a path.
+**Finally, measure the offset.** Separate dub files are often not aligned with
+their original-language counterpart. Press **Measure** on each row and it
+reports the offset together with a quality score — a matched pair scores well
+above 2. You can also type a value. If you skip this, 0 ms is used.
 
-**Passthrough ranges.** The opening theme is identical across every episode of
-an arc, so alignment there is a coin flip. Mark it in step 2 and that range
-keeps the edit's own audio: no matching is attempted and nothing is replaced.
+---
 
-**Nothing is auto-detected.** Source episodes are never guessed. A missing
-source shows up as an obvious silent gap rather than a plausible wrong match.
+## Step 5 · Describe each edit
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `OPDUB_MEDIA` | `/workspace/onepace:/workspace/onepiece` | Colon-separated read-only media roots |
-| `OPDUB_OUT` | `/workspace/out` | The only writable directory |
+**Tab 2 · Edits.** Every edit in the folder starts ticked; untick any you do
+not want to process. For each one:
+
+1. **Pick its audio stream.** Listen and confirm — many edits have a single
+   untagged stream, and it still deserves a check.
+2. **Tick the source episodes it was cut from.** Nothing is detected for you.
+   Ticking only the 2–4 originals an edit actually uses cuts alignment time by
+   3–5×, and a missing source shows up as an obvious silent gap rather than a
+   plausible wrong match.
+3. **Mark the opening theme.** Press **Load waveform**, then drag across the
+   theme and press **Mark as passthrough**. Shift+scroll zooms the waveform
+   about the pointer and alt+drag pans it, so you can set the boundary
+   precisely; **Fit** returns to the whole file.
+
+**Why the theme needs marking:** it is identical across every episode of an
+arc, so alignment there is a coin flip. A passthrough range keeps the edit's
+own audio for that stretch — nothing is matched and nothing is replaced.
+
+Each edit shows a status pill: `ready`, `N warning` (non-blocking — hover to
+read them), or `N to fix` (blocking; the run will refuse).
+
+---
+
+## Step 6 · Run it
+
+**Tab 3 · Run.**
+
+1. Press **Check plans**. This validates every file and stream without doing
+   any work, and lists anything blocking.
+2. Set the options if you need to:
+
+   | Option | Default | Meaning |
+   |---|---|---|
+   | Mux into MKV when done | on | Also produce a finished `.mkv`, not just the WAV |
+   | Crossfade at seams | `0.02` | Equal-power fade at segment boundaries, seconds. `0` is a hard cut |
+   | Dub track language tag | `eng` | Language tag written into the new track |
+
+3. Press **Run selected edits**. Jobs queue and run one at a time — alignment
+   is CPU-bound — with live progress and a log you can watch.
+
+Each finished job offers its outputs for download, and writes them under
+`out/`. Expect minutes per edit, mostly fingerprinting.
+
+---
+
+## Step 7 · Review and fix
+
+**Tab 4 · Review & fix.** The EDL is the real product; rendering is just a
+consequence of it, and some cuts will always want a nudge.
+
+Pick an EDL and you get a timeline coloured by source, with low-confidence cuts
+flagged in red. Click a segment to inspect it, then:
+
+- **Hear the seam** in both languages — the same scene should be playing.
+- **Nudge the cut** by ±10/100/500 ms, or type an exact time. Moving a cut
+  moves the next segment's source time with it, so its content stays put.
+- **Save & re-render** — alignment does *not* run again, so this is quick.
+
+---
+
+# Reference
 
 ## How it works
 
-1. **align** — fingerprints the Japanese audio in the edit and all source
-   episodes, then uses a Hough-transform accumulator to map every moment of
-   the edit back to its source and timestamp. Writes an EDL (edit decision
-   list) JSON file.
+The core method is aligning **same-language audio to same-language audio**. The
+edit's original-language track and the source episode's original-language track
+contain literally the same recording, so they correlate strongly. Matching a
+dub against an original would not.
 
-2. **render** — reads the EDL, extracts the English dub segments from the
-   source files, and concatenates them into a `.dub.wav` that matches the
-   edit's runtime.
+1. **align** — fingerprints the original-language audio of the edit and of each
+   ticked source, then uses a Hough-transform accumulator to map every moment
+   of the edit back to a source and a timestamp. The mapping is piecewise
+   constant in its offset; recovering that segment list is the whole problem.
+   Writes an EDL (edit decision list) JSON file.
 
-3. **mux** — adds the WAV as a new audio track without touching the video or
-   the existing audio.
+2. **render** — reads the EDL, extracts the corresponding dub segments from the
+   source files, and concatenates them into a `.dub.wav` matching the edit's
+   runtime.
 
-## CLI
+3. **mux** — adds that WAV as a new audio track. Copy-mux only, so video,
+   existing audio, subtitles, chapters and attachments all survive untouched.
+
+Because the EDL sits between alignment and rendering, you can correct a cut and
+re-render in seconds without re-aligning.
+
+## Command line
+
+The UI drives the same code. Everything below is also available directly:
 
 ```bash
 .venv/bin/python -m opdub.cli --help
 ```
 
-### run
+### `run` — align from a plan
 
-Align from a plan. This is what the UI drives. A plan states every ambiguous
-choice outright, so nothing is inferred from filenames or language tags:
+What the UI uses. A plan states every ambiguous choice outright, so nothing is
+inferred from filenames or language tags:
 
 ```json
 {
@@ -271,15 +371,16 @@ choice outright, so nothing is inferred from filenames or language tags:
 python3 -m opdub.cli run plan.json --out out/edls -v
 ```
 
-`dub_offset` is optional — omit it and it is measured, and the measurement is
-reported with its quality rather than silently accepted. `passthrough` ranges
-are carved out of the segment list after alignment and keep the edit's own
-audio at render time.
+The `jpn` key names the original-language track used for alignment; `dub` names
+the track the new audio is built from. `dub_offset` is optional — omit it and
+it is measured, with the measurement reported alongside its quality rather than
+silently accepted. `passthrough` ranges are carved out of the segment list
+after alignment and keep the edit's own audio at render time.
 
-### align
+### `align` — align by auto-detection
 
-The older auto-detecting path. Infers Japanese/dub streams and pairings from
-filename suffixes and stream tags; use `run` when you want certainty.
+The older path. Infers language streams and pairings from filename suffixes and
+stream tags; prefer `run` when you want certainty.
 
 ```bash
 python3 -m opdub.cli align <edit> --sources <dir> --out <dir> [options]
@@ -295,7 +396,7 @@ python3 -m opdub.cli align <edit> --sources <dir> --out <dir> [options]
 
 Writes `<out>/<edit-stem>.json`.
 
-### render
+### `render` — EDL to WAV
 
 ```bash
 python3 -m opdub.cli render <edl> --out <dir> [options]
@@ -311,19 +412,31 @@ python3 -m opdub.cli render <edl> --out <dir> [options]
 
 Writes `<out>/<edit-stem>.dub.wav`.
 
-### mux
+### `mux` — WAV into the video
 
 ```bash
 python3 -m opdub.cli mux <edit> <dub.wav> <out.mkv> \
     [--lang eng] [--title "English Dub"] [--default]
 ```
 
-Copy-mux only: `-map 0 -c copy`, so video, existing audio, subtitles, chapters
-and attachments all survive untouched.
+Copy-mux only: `-map 0 -c copy`.
 
-## The EDL
+### Batching a whole arc
 
-The JSON is human-readable and can be hand-edited before rendering:
+```bash
+for ep in input/edits/*.mkv; do
+    stem=$(basename "$ep" .mkv)
+    python3 -m opdub.cli align "$ep" --sources input/sources --out out/edls -v
+    python3 -m opdub.cli render "out/edls/${stem}.json" --out out/wav -v
+    python3 -m opdub.cli mux "$ep" "out/wav/${stem}.dub.wav" "out/muxed/${stem}.mkv"
+done
+```
+
+In the UI, tick several edits and press run — same thing, with progress.
+
+## The EDL format
+
+Human-readable JSON, editable by hand before rendering. One segment looks like:
 
 ```json
 {
@@ -336,27 +449,45 @@ The JSON is human-readable and can be hand-edited before rendering:
 }
 ```
 
-- `t0` / `t1` — segment start/end in the edit (seconds)
-- `src` — index into the `sources` array in the EDL header
-- `src_t0` — start time in the source episode (seconds)
-- `conf` — vote density, not a probability. Real segments run from a couple of
-  hundred to tens of thousands; below ~1000 is worth a look
-- `status` — `ok`, `gap`, `gap-filled`, or `passthrough`
+| Field | Meaning |
+|---|---|
+| `t0` / `t1` | Segment start/end in the edit, seconds |
+| `src` | Index into the `sources` array in the EDL header |
+| `src_t0` | Start time in the source episode, seconds |
+| `conf` | Vote density, **not** a probability. Real segments run from a couple of hundred to tens of thousands; below ~1000 is worth a look |
+| `status` | `ok`, `gap`, `gap-filled`, or `passthrough` |
 
-Low-confidence segments or obvious errors can be corrected by editing the JSON
-and re-running `render` — no need to re-run the alignment.
+Fix a bad segment by editing the JSON and re-running `render` — alignment does
+not need to run again.
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OPDUB_MEDIA` | `./input` | Colon-separated read-only media roots |
+| `OPDUB_OUT` | `./out` | The only writable directory |
+
+Both default to paths relative to where you start the server, which is why the
+tutorial runs it from the project folder. To read media from elsewhere:
+
+```bash
+OPDUB_MEDIA=/mnt/media/edits:/mnt/media/originals \
+OPDUB_OUT=/mnt/big-disk/opdub-out \
+    .venv/bin/uvicorn opdub.server:app --port 8000
+```
+
+Media roots are treated as strictly read-only: every write path is checked
+against `OPDUB_OUT` and nothing else.
 
 ## File layout
 
-One input tree and one output tree, both in the project folder:
-
 ```
-input/                          ← mounted read-only
+input/                          ← read-only
 ├── edits/
-│   └── Episode 01.mp4          ← fan edit (Japanese audio only)
+│   └── Episode 01.mp4          ← the fan edit
 └── sources/
-    ├── Episode 313 Title.jpn.mp4   ← Japanese audio (alignment)
-    ├── Episode 313 Title.eng.mp4   ← English dub   (rendering)
+    ├── Episode 313.jpn.mp4     ← original language (alignment)
+    ├── Episode 313.eng.mp4     ← dub               (rendering)
     └── ...
 
 out/                            ← the only writable location
@@ -368,48 +499,92 @@ out/                            ← the only writable location
 └── cache/     waveform peaks
 ```
 
-The nesting is up to you — `input/arc-11/`, `input/whisky-peak/sources/` and so
-on all work, because the UI lists folders that contain media instead of
-expecting fixed names.
+Those `.jpn.` / `.eng.` suffixes are only read by the `align` command, which
+falls back to the stream language tag and then to the episode number. It
+recognises `.jpn`/`.jap` as the original language, `.eng`/`.dub` as the dub,
+and `.skip` to exclude a file entirely. The web UI and `run` ignore filenames
+completely — you name the file and the stream.
 
-The `.jpn.` / `.eng.` / `.skip.` suffixes are only used by the `align` command,
-which falls back to the stream language tag and then to episode number. The
-web UI and `run` ignore filenames entirely — you name the file and the stream.
+## Troubleshooting
 
-## Tips
+### The UI did not change after an upgrade
 
-**Pick only the sources an edit actually uses.** Each fan edit typically draws
-from 2–4 originals. Fingerprinting only those cuts align time by 3–5×. In the
-UI this is step 2; on the CLI it is `--source-files` (for `align`) or simply
-the `sources` list in your plan.
+Two causes, and the header tells you which.
 
-**Batch a whole arc.** In the UI, tick several edits and press run — they queue
-and execute one at a time. On the CLI:
+The build marker in the header — `ui b87aad12` — is hashed from the frontend
+files the server is serving.
+
+- **The marker did not change after `git pull`.** The Docker image was not
+  rebuilt; the frontend is baked into it. Run
+  `git pull && docker compose up -d --build`.
+- **The marker is red and says `stale`.** The page in front of you is a cached
+  copy older than the server's. Reload with <kbd>ctrl+shift+R</kbd>.
+
+### An edit I already loaded is not selected
+
+Edits arrive ticked, but only ones discovered fresh. Any edit already saved in
+your browser's local storage keeps whatever state it had. Tick it, or clear the
+site's local storage.
+
+### "No matching audio track" on a run
+
+opdub selects streams by language tag with a fallback to title keywords, and
+fails loudly rather than grabbing stream 1 and hoping. The error prints what
+the file actually contains. Pick the stream explicitly in tab 1 or 2.
+
+### Segments are flagged low-confidence
+
+`conf` below ~1000 usually means that stretch of the edit came from a source
+you did not tick, or from a range where the audio genuinely repeats — a theme,
+a recap, silence. Check the ticked sources first, then mark the range as
+passthrough if it is a theme.
+
+### The dub is offset from the picture
+
+Measure the offset in tab 1 rather than leaving it blank. A separate dub file
+is frequently a different master with a different start.
+
+## Uninstalling
 
 ```bash
-for ep in /path/to/edits/*.mp4; do
-    stem=$(basename "$ep" .mp4)
-    python3 -m opdub.cli align "$ep" --sources /path/to/sources --out out/edls -v
-    python3 -m opdub.cli render "out/edls/${stem}.json" --out out/wav -v
-    python3 -m opdub.cli mux "$ep" "out/wav/${stem}.dub.wav" "out/muxed/${stem}.mkv"
-done
+./uninstall.sh                  # remove what install.sh added, keep out/
+./uninstall.sh --dry-run        # list it first
+./uninstall.sh --purge-output   # also delete out/ (asks first)
 ```
 
-**Soften the passthrough seam.** Where the opening theme hands over to the dub,
-`--crossfade 0.02` applies a 20 ms equal-power fade. The UI's crossfade box
-starts at 0.02; the CLI still defaults to 0, a hard cut.
+It reads `.opdub-install.manifest` and removes only what is listed there. An
+ffmpeg or Python that predates the install is left alone.
+
+The manifest is treated as untrusted input: a virtualenv is only deleted if it
+actually contains a `pyvenv.cfg`, and a binary only if it is named `ffmpeg`,
+`ffprobe`, `uv` or `uvx`. **Source media is never deleted under any flag** —
+without that check, a media directory sitting inside the repo root would look
+like a legitimate target.
+
+`out/` — your EDLs, renders and saved setups — is kept unless you pass
+`--purge-output`, and even then it asks.
 
 ## Development
 
 ```bash
-./install.sh --verify              # install, run tests, score the fixtures
+./install.sh --verify          # install, run tests, score the fixtures
 .venv/bin/python -m pytest tests -q
 .venv/bin/python score.py fixtures/ground_truth.json --edl-dir out/edls
 ```
 
-There is also an optional UI end-to-end test that drives the real frontend
-against a running server with real media — see `tests/ui/README.md`. It is
-dev-only; the app itself still has no build step and no JS dependencies.
+`score.py` writes `metrics.json` and exits non-zero if any gate regresses.
+Regenerate the fixtures — deterministic from a seed — with:
 
-`score.py` writes `metrics.json` and fails if any gate regresses. Regenerate
-the fixtures with `python make_fixtures.py fixtures --sources 6 --edits 3`.
+```bash
+python make_fixtures.py fixtures --sources 6 --edits 3
+```
+
+Two optional UI test harnesses live in `tests/ui/` and are dev-only; the app
+itself still has no build step and no runtime JavaScript dependencies.
+
+- `e2e.mjs` drives the real frontend in jsdom against a running server with
+  real media, through the whole workflow.
+- `layout.mjs` drives a real Chromium to measure actual box geometry, which
+  jsdom cannot do.
+
+See `tests/ui/README.md`.

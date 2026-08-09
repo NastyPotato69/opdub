@@ -6,9 +6,8 @@ reports the measurement together with its quality; it never pairs files by
 name, never picks an audio stream by language tag, and never guesses which
 source episodes an edit was cut from.  Those are all inputs.
 
-    OPDUB_MEDIA   colon-separated read-only media roots
-                  (default: /workspace/onepace:/workspace/onepiece)
-    OPDUB_OUT     writable output directory (default: /workspace/out)
+    OPDUB_MEDIA   colon-separated read-only media roots (default: ./input)
+    OPDUB_OUT     writable output directory (default: ./out)
 
     uvicorn opdub.server:app --port 8000
 
@@ -42,14 +41,16 @@ MEDIA_EXTS = {".mkv", ".mp4", ".avi", ".m4v", ".mov"}
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Defaults are the project's own input/ and out/ trees, resolved against the
+# working directory, which is what the docker-compose mounts and the install
+# instructions both line up with. Absolute paths elsewhere are the override,
+# not the assumption.
 MEDIA_ROOTS = [
     Path(p).expanduser().resolve()
-    for p in os.environ.get(
-        "OPDUB_MEDIA", "/workspace/onepace:/workspace/onepiece"
-    ).split(":")
+    for p in os.environ.get("OPDUB_MEDIA", "input").split(":")
     if p.strip()
 ]
-OUT_DIR = Path(os.environ.get("OPDUB_OUT", "/workspace/out")).expanduser().resolve()
+OUT_DIR = Path(os.environ.get("OPDUB_OUT", "out")).expanduser().resolve()
 
 EDL_DIR = OUT_DIR / "edls"
 WAV_DIR = OUT_DIR / "wav"

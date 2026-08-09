@@ -338,8 +338,7 @@ esac
 
 cat <<EOF
 ${B}Start the web UI:${Z}
-    OPDUB_MEDIA=/workspace/onepace:/workspace/onepiece \\
-    OPDUB_OUT=/workspace/out \\
+    OPDUB_MEDIA=./input OPDUB_OUT=./out \\
         $VENV/bin/uvicorn opdub.server:app --port 8000
 
   then open http://localhost:8000

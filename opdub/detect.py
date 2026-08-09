@@ -76,7 +76,7 @@ def episode_key(name: str) -> tuple[int | None, int] | None:
     Handles the conventions these libraries actually use: 'Episode 313',
     'S21E1071', 'Show - 1071 [1080p]', 'Ep.313', '#313', 'E313', and a bare
     trailing number. Years and resolutions are never mistaken for episodes,
-    which matters for names like 'One Piece 1999 Episode 313 ...'.
+    which matters for names like 'Some Show 1999 Episode 313 ...'.
     """
     s = _clean(name)
 

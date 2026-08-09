@@ -704,7 +704,7 @@ function renderPairTable() {
 
     const head = document.createElement('div');
     head.className = 'row';
-    // Episode labels are short ("Episode 3", "One Piece 384"). Letting the
+    // Episode labels are short ("Episode 3", "Show 384"). Letting the
     // field grow to the full card width strands the name on the left and the
     // buttons on the right with a metre of nothing between them.
     const name = document.createElement('input');
@@ -2176,7 +2176,7 @@ $('#btnRerender').onclick = async () => {
 // ───────────────────────────── projects ─────────────────────────────
 
 $('#btnSaveProject').onclick = async () => {
-  const name = prompt('Save this setup as:', S.projectName || 'post-enies-lobby');
+  const name = prompt('Save this setup as:', S.projectName || 'my-arc');
   if (!name) return;
   try {
     await api('/api/projects', {
