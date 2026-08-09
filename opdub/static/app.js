@@ -655,7 +655,7 @@ function dropSlot(pair, role) {
   const top = document.createElement('div');
   top.className = 'row'; top.style.gap = '6px';
   const fn = document.createElement('span');
-  fn.className = 'fn'; fn.style.flex = '1'; fn.textContent = slot.name; fn.title = slot.name;
+  fn.className = 'fn'; fn.textContent = slot.name; fn.title = slot.name;
   top.append(fn);
 
   const audio = slot.probe?.audio || [];
@@ -802,8 +802,11 @@ function renderMultitrack() {
 
     const head = document.createElement('div');
     head.className = 'row';
-    head.append(Object.assign(document.createElement('b'), { textContent: pr.name }));
-    const sp = document.createElement('span'); sp.style.flex = '1'; head.append(sp);
+    // Same shrink rule as the drop slots: without min-width the filename sets
+    // the card's width and the duration and pill get pushed out of it.
+    head.append(Object.assign(document.createElement('b'), {
+      textContent: pr.name, title: pr.name,
+      style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }));
     head.append(Object.assign(document.createElement('span'), {
       className: 'hint mono',
       textContent: pr.duration ? fmt(pr.duration) : '' }));
@@ -1252,10 +1255,12 @@ function renderEdits() {
     cb.type = 'checkbox'; cb.checked = e.selected;
     cb.onchange = () => { e.selected = cb.checked; saveLocal(); renderEdits(); };
     const lbl = document.createElement('label');
-    lbl.className = 'check'; lbl.append(cb);
-    lbl.append(Object.assign(document.createElement('b'), { textContent: e.name }));
+    lbl.className = 'check'; lbl.style.cssText = 'flex:1;min-width:0';
+    lbl.append(cb);
+    lbl.append(Object.assign(document.createElement('b'), {
+      textContent: e.name, title: e.name,
+      style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }));
     head.append(lbl);
-    const sp = document.createElement('span'); sp.style.flex = '1'; head.append(sp);
     head.append(Object.assign(document.createElement('span'), {
       className: 'hint mono',
       textContent: e.probe?.duration ? fmt(e.probe.duration) : '' }));
