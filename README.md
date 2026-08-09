@@ -11,6 +11,9 @@ re-encoding anything.
 **What you need to supply:** the edit, and the source episodes it was cut from,
 with a dub track available for those sources. Everything else is derived.
 
+![The review tab, showing an edit's timeline broken into segments and coloured
+by which source episode each one came from](docs/img/05-review.png)
+
 ---
 
 ## Contents
@@ -188,6 +191,9 @@ track (used to build the new audio).
 | **Separate files per language** | Every file is listed on the left. Drag one into the dub slot and one into the original-language slot of an episode row — or click a file, then click a slot. |
 | **One file, multiple tracks** | Each file's audio tracks are listed. Mark one as the original language and one as the dub. |
 
+![The source episodes tab: the file pool on the left, paired episode rows on
+the right, and a live count of what is ready](docs/img/01-sources.png)
+
 **Then press ✨ Assign automatically.** It reads stream language tags and
 titles first, then filenames, and understands the usual episode conventions —
 `Episode 313`, `S21E1071`, `Show - 1071 [1080p]`, `Ep.313`, `#313`, `E313`, and
@@ -230,6 +236,9 @@ not want to process. For each one:
    about the pointer and alt+drag pans it, so you can set the boundary
    precisely; **Fit** returns to the whole file.
 
+![The edits tab: stream chooser, source episode tickboxes, and the waveform
+with the intro marked as a passthrough range](docs/img/02-edits.png)
+
 **Why the theme needs marking:** it is identical across every episode of an
 arc, so alignment there is a coin flip. A passthrough range keeps the edit's
 own audio for that stretch — nothing is matched and nothing is replaced.
@@ -259,6 +268,9 @@ read them), or `N to fix` (blocking; the run will refuse).
 Each finished job offers its outputs for download, and writes them under
 `out/`. Expect minutes per edit, mostly fingerprinting.
 
+![The run tab: a finished job with its progress bar, download links for the
+EDL, WAV and MKV, and the stage-by-stage log](docs/img/04-run-done.png)
+
 ---
 
 ## Step 7 · Review and fix
@@ -273,6 +285,9 @@ flagged in red. Click a segment to inspect it, then:
 - **Nudge the cut** by ±10/100/500 ms, or type an exact time. Moving a cut
   moves the next segment's source time with it, so its content stays put.
 - **Save & re-render** — alignment does *not* run again, so this is quick.
+
+![The review tab: the EDL timeline coloured by source with the passthrough in
+grey, the segment table, and the inspector's nudge controls](docs/img/05-review.png)
 
 ---
 

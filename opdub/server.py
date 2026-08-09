@@ -259,6 +259,10 @@ def _waveform_peaks(path: Path, stream: int, points: int) -> dict:
         "duration": duration,
         "points": [round(float(v / top), 4) for v in peaks],
     }
+    # The out/ subdirectories are created once at startup, so a long-running
+    # server whose output tree was cleaned underneath it would fail here — and
+    # keep failing, on every waveform, until someone restarted it.
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(json.dumps(result))
     return result
 
