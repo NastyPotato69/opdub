@@ -663,3 +663,12 @@ itself still has no build step and no runtime JavaScript dependencies.
   jsdom cannot do.
 
 See `tests/ui/README.md`.
+
+The `fixtures/` tree is checked in rather than ignored, so the tests and the
+scorer work straight after a clone. It is synthetic — swept tones built from a
+seed, not clips of anything — and regenerating it is deterministic.
+
+## Licence
+
+[MIT](LICENSE). The tool ships no video or audio: it operates on files you
+already have, and what you do with the output is on you.

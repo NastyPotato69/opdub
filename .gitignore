@@ -13,7 +13,12 @@
 # daemon creates it root-owned, which you then cannot clean up without sudo.
 out/*
 !out/.gitkeep
-fixtures/
+
+# fixtures/ is deliberately NOT ignored. The files are synthetic — generated
+# from a seed by make_fixtures.py — and tracking them is what lets a fresh
+# clone run the tests and the scorer without generating anything first. This
+# used to say `fixtures/`, which was misleading: the files were already
+# tracked, so the rule did nothing except silently hide any new one.
 
 # Local media directories (mount points — not committed)
 edits/
