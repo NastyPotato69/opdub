@@ -167,7 +167,7 @@ anything.
 | Step | What you decide |
 |---|---|
 | 1 · Source episodes | Set up your source library — see below. Measure the jpn→dub offset, or type one. |
-| 2 · Edits | Confirm the edit's Japanese stream, tick the source episodes it uses, and drag across the waveform to mark the opening theme. |
+| 2 · Edits | Confirm the edit's Japanese stream, tick the source episodes it uses, and drag across the waveform to mark the opening theme. Every edit in the folder starts ticked; shift+scroll zooms the waveform, alt+drag pans it. |
 | 3 · Run | Check the plans, then queue the edits. They run one at a time with live progress. |
 | 4 · Review & fix | Timeline of the EDL coloured by source, flagged low-confidence cuts, nudge a cut, hear the seam in both languages, re-render without re-aligning. |
 
@@ -383,8 +383,8 @@ done
 ```
 
 **Soften the passthrough seam.** Where the opening theme hands over to the dub,
-`--crossfade 0.02` (or the crossfade box in the UI) applies a 20 ms equal-power
-fade. The default is 0, which is a hard cut.
+`--crossfade 0.02` applies a 20 ms equal-power fade. The UI's crossfade box
+starts at 0.02; the CLI still defaults to 0, a hard cut.
 
 ## Development
 

@@ -55,8 +55,8 @@ w.Element.prototype.getBoundingClientRect = function () {
 // `const S` does not leak between eval calls, so expose a handle for the test.
 // Appended here rather than shipped in app.js.
 w.eval(readFileSync(JS, 'utf8') +
-  '\n;window.__t = { get S(){return S}, saveLocal, renderEdits, renderPairs,' +
-  ' loadEdlList, openEdl, saveEdl };');
+  '\n;window.__t = { get S(){return S}, get NP(){return NP}, saveLocal, renderEdits,' +
+  ' renderPairs, loadEdlList, openEdl, saveEdl };');
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const $ = s => w.document.querySelector(s);
@@ -107,6 +107,38 @@ try {
   ck('chips show real stream tags',
      $('#filePool .chip').textContent.includes('jpn'), $('#filePool .chip').textContent);
 
+  // ──────────────── manual pairing keeps the status honest ────────────────
+  sec('step 1 — hand-assignment and the status line');
+  ck('status counts the unassigned files up front',
+     $('#assignReport').textContent.includes('6 files unassigned'),
+     $('#assignReport').textContent);
+
+  $('#btnAddPair').onclick();
+  await wait(80);
+  const firstRow = state('S.pairs[0].label');
+  $('#btnAddPair').onclick();
+  await wait(80);
+  ck('a new row goes to the top of the list',
+     state('S.pairs[0].label') !== firstRow && state('S.pairs[1].label') === firstRow,
+     state('S.pairs.map(p=>p.label).join(",")'));
+  ck('the top card is the new row',
+     $('#pairTable .card input').value === state('S.pairs[0].label'),
+     $('#pairTable .card input').value);
+
+  // Drop a file the way a drag does, then watch the status move.
+  const dropPath = state('S.sourceFiles[0].path');
+  $('#pairTable .drop').ondrop({
+    preventDefault() {}, dataTransfer: { getData: () => dropPath } });
+  await wait(120);
+  ck('dropped file landed in the row', state('S.pairs[0].dub.path') === dropPath,
+     state('JSON.stringify(S.pairs[0].dub && S.pairs[0].dub.path)'));
+  ck('status re-counted after a manual drop',
+     $('#assignReport').textContent.includes('5 files unassigned'),
+     $('#assignReport').textContent);
+  ck('status counts the half-filled row as incomplete',
+     $('#assignReport').textContent.includes('2 incomplete'),
+     $('#assignReport').textContent);
+
   // ───────────────────── multitrack + auto-assign ─────────────────────
   sec('step 1 — multitrack mode and auto-assign');
   $$('#modeSwitch button').find(b => b.dataset.mode === 'multitrack').onclick();
@@ -150,6 +182,23 @@ try {
   await wait(250);
   ck('switching changes the reported track', $('#npWhat').textContent.includes('#2'),
      $('#npWhat').textContent);
+
+  // Scrubbing: the bar addresses the whole track, not the decoded window.
+  const fileDur = w.eval('window.__t.NP.fileDur');
+  ck('bar knows how long the track is', fileDur > 0, fileDur);
+  const bar = $('#npBar');
+  // getBoundingClientRect is stubbed at 900 px wide starting at x=0.
+  bar.dispatchEvent(new w.MouseEvent('mousedown',
+    { clientX: 720, bubbles: true, cancelable: true }));
+  w.dispatchEvent(new w.MouseEvent('mouseup', { clientX: 720, bubbles: true }));
+  await wait(250);
+  const at = w.eval('window.__t.NP.base');
+  ck('scrubbing to 80% seeks there', Math.abs(at - fileDur * 0.8) < fileDur * 0.02,
+     `${at} vs ${fileDur * 0.8}`);
+  ck('scrubbing keeps playing on from there', w.eval('window.__t.NP.chain') === true);
+  ck('playhead redrawn at the new position',
+     parseFloat($('#npFill').style.width) > 70, $('#npFill').style.width);
+
   $('#npStop').onclick();
   ck('stop clears the bar', !$('#np').classList.contains('on'));
 
@@ -160,10 +209,20 @@ try {
   const editCard = $('#editList .card');
   ck('edit listed', editCard && editCard.textContent.includes('edit_00.mkv'));
 
-  editCard.querySelector('input[type=checkbox]').checked = true;
-  editCard.querySelector('input[type=checkbox]').onchange();
+  ck('edits arrive selected', state('S.edits[0].selected') === true);
+  ck('selected edits are already expanded', $('#editList .streams') !== null);
+  ck('badge counts the selected edits', $('#nEdits').textContent === '1',
+     $('#nEdits').textContent);
+
+  // Unticking and re-ticking must still work.
+  const editBox = editCard.querySelector('input[type=checkbox]');
+  editBox.checked = false; editBox.onchange();
+  await wait(120);
+  ck('unticking collapses the card', $('#editList .streams') === null);
+  $('#editList .card input[type=checkbox]').checked = true;
+  $('#editList .card input[type=checkbox]').onchange();
   await wait(150);
-  ck('selecting the edit expands it', $('#editList .streams') !== null);
+  ck('re-selecting the edit expands it', $('#editList .streams') !== null);
 
   const strm = $('#editList .stream');
   strm.onclick();
@@ -171,10 +230,12 @@ try {
   ck('edit audio stream chosen', state('S.edits[0].stream') === 1,
      state('S.edits[0].stream'));
 
+  // Re-fetched: the card above was rebuilt by the tick/untick round trip.
+  const liveEditBox = $('#editList .card input[type=checkbox]');
   const srcBoxes = $$('#editList label.check input[type=checkbox]');
   let ticked = 0;
   for (const b of srcBoxes) {
-    if (b === editCard.querySelector('input[type=checkbox]')) continue;
+    if (b === liveEditBox) continue;
     if (!b.checked) { b.checked = true; b.onchange(); ticked++; await wait(30); }
   }
   ck('source episodes ticked by hand', state('S.edits[0].sources.length') === 6,
@@ -194,8 +255,66 @@ try {
   ck('no blocking problems on the edit', $('#editList .pill.bad') === null,
      $$('#editList .pill').map(p => p.textContent).join(','));
 
+  sec('step 2 — waveform zoom');
+  const loadWave = $$('#editList button.btn').find(b => b.textContent === 'Load waveform');
+  ck('waveform can be loaded', !!loadWave);
+  loadWave.onclick();
+  for (let i = 0; i < 30 && !state('S.edits[0].wave'); i++) await wait(1000);
+  ck('waveform decoded', state('S.edits[0].wave !== null'),
+     state('JSON.stringify(S.edits[0].wave && S.edits[0].wave.duration)'));
+
+  const waveDur = state('S.edits[0].wave.duration');
+  ck('view starts on the whole file',
+     Math.abs(state('S.edits[0].waveView.t1') - waveDur) < 0.02,
+     `${state('S.edits[0].waveView.t1')} of ${waveDur}`);
+
+  const cv = $('#editList canvas.wave');
+  const wheel = (deltaY, shiftKey) => cv.dispatchEvent(new w.WheelEvent('wheel',
+    { deltaY, shiftKey, clientX: 450, bubbles: true, cancelable: true }));
+
+  wheel(-400, false);
+  await wait(80);
+  ck('plain scroll leaves the zoom alone (the page has to scroll)',
+     Math.abs(state('S.edits[0].waveView.t1 - S.edits[0].waveView.t0') - waveDur) < 0.02,
+     state('S.edits[0].waveView.t1 - S.edits[0].waveView.t0'));
+
+  wheel(-400, true);
+  await wait(80);
+  const zoomSpan = state('S.edits[0].waveView.t1 - S.edits[0].waveView.t0');
+  ck('shift+scroll zooms in', zoomSpan < waveDur * 0.7, `${zoomSpan} of ${waveDur}`);
+  ck('zoom holds the pointer\'s moment still',
+     Math.abs(state('S.edits[0].waveView.t0') + zoomSpan / 2 - waveDur / 2) < waveDur * 0.05,
+     state('S.edits[0].waveView.t0'));
+  ck('zoomed window stays inside the file',
+     state('S.edits[0].waveView.t0') >= 0 &&
+     state('S.edits[0].waveView.t1') <= waveDur + 1e-6);
+  ck('readout reports the window',
+     /s wide/.test($('#editList canvas.wave').parentNode.textContent),
+     $('#editList canvas.wave').parentNode.textContent.slice(0, 80));
+
+  // Zoom survives the re-render that marking a range triggers.
+  T().renderEdits();
+  await wait(120);
+  ck('zoom survives a re-render',
+     Math.abs(state('S.edits[0].waveView.t1 - S.edits[0].waveView.t0') - zoomSpan) < 1e-9);
+
+  const fitBtn = $$('#editList button.btn').find(b => b.textContent === 'Fit');
+  ck('a way back out is offered', !!fitBtn);
+  fitBtn.onclick();
+  await wait(80);
+  ck('Fit returns to the whole file',
+     Math.abs(state('S.edits[0].waveView.t1 - S.edits[0].waveView.t0') - waveDur) < 0.02);
+
+  wheel(4000, true);
+  await wait(80);
+  ck('zooming out never exceeds the file',
+     Math.abs(state('S.edits[0].waveView.t1 - S.edits[0].waveView.t0') - waveDur) < 0.02,
+     state('S.edits[0].waveView.t1 - S.edits[0].waveView.t0'));
+
   // ───────────────────────────── step 3 ─────────────────────────────
   sec('step 3 — validate and run the real pipeline');
+  ck('crossfade defaults to 20 ms', $('#optCrossfade').value === '0.02',
+     $('#optCrossfade').value);
   $('#btnValidate').onclick();
   await wait(3000);
   ck('plan validated against real files',

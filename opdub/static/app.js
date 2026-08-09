@@ -19,6 +19,7 @@ const S = {
   editDir: '',
   sourceFiles: [],          // probed files in the sources folder
   pairs: [],      // source episodes, hand-paired
+  assignUnmatched: [],      // last auto-assign's reasons, keyed by path
   edits: [],      // edits with stream / sources / passthrough
   jobs: [],
   activeJob: null,
@@ -82,35 +83,113 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 
 let currentAudio = null, currentBtn = null;
 
-/** What is playing right now, so the bar can show it and switch tracks. */
-const NP = { path: null, stream: null, t: 0, dur: 0, name: '', streams: [] };
+/* The preview endpoint hands back one decoded window at a time, so playing on
+ * past it means chaining requests. 30 s is long enough that the chain is rare
+ * and short enough that a scrub lands in well under a second. */
+const CHUNK = 30;
+
+/** What is playing right now: which window of which track, and how long the
+ *  whole track is, so the scrub bar can address the entire file. */
+const NP = {
+  path: null, stream: null, name: '', streams: [],
+  base: 0,      // file time this window starts at
+  len: 0,       // length of the window that was requested
+  fileDur: 0,   // whole-track duration; 0 while unknown
+  chain: false, // keep loading the next window when this one ends
+};
+
+/** Durations learned from probes, so scrubbing a file that was never probed
+ *  in this view (a dub referenced only by an EDL) still knows its length. */
+const durCache = new Map();
+
+function rememberDuration(pr) {
+  if (pr?.path && pr.duration) durCache.set(pr.path, pr.duration);
+}
+
+async function ensureFileDur(path) {
+  if (durCache.has(path)) return durCache.get(path);
+  try {
+    const pr = await probeOne(path);
+    durCache.set(path, pr?.duration || 0);
+  } catch (_) { durCache.set(path, 0); }
+  return durCache.get(path);
+}
+
+/** Drop the audio element without touching what the bar says it is playing. */
+function killAudio() {
+  if (currentAudio) {
+    currentAudio.onended = currentAudio.onerror = currentAudio.ontimeupdate = null;
+    currentAudio.pause();
+    currentAudio = null;
+  }
+}
 
 function stopAudio() {
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  killAudio();
   if (currentBtn) { currentBtn.classList.remove('playing'); currentBtn = null; }
   NP.path = null;
   renderNowPlaying();
 }
 
+/** Fetch and play one window. Everything else is bookkeeping around this. */
+function playWindow(at, len) {
+  killAudio();
+  NP.base = Math.max(0, at);
+  NP.len = len;
+
+  const url = `/api/preview?path=${encodeURIComponent(NP.path)}&stream=${NP.stream}` +
+              `&t=${NP.base.toFixed(3)}&dur=${len}`;
+  const a = new Audio(url);
+  currentAudio = a;
+
+  a.onended = () => {
+    // A window past the end of the file decodes to nothing and ends instantly;
+    // that, not a duration check, is what reliably terminates the chain — the
+    // track length is not always known.
+    if (!NP.chain || !(a.duration > 0.25)) { stopAudio(); return; }
+    if (NP.fileDur && NP.base + NP.len >= NP.fileDur - 0.05) { stopAudio(); return; }
+    playWindow(NP.base + NP.len, CHUNK);
+  };
+  a.onerror = () => { toast('Could not play that stream', 'bad'); stopAudio(); };
+  a.ontimeupdate = drawProgress;
+  a.play().catch(() => {});
+
+  renderNowPlaying();
+  drawProgress();
+}
+
+/**
+ * Start playback at `t`.
+ *
+ * `opts.snippet` keeps the old behaviour of stopping at the end of the
+ * requested window — that is what makes the A/B compare buttons useful. Every
+ * other button plays on until stopped, and any scrub switches to that mode.
+ */
 function play(path, stream, t, dur, btn, opts = {}) {
   const same = currentBtn === btn && currentAudio;
   stopAudio();
   if (same) return;                       // clicking the same button stops
 
-  const url = `/api/preview?path=${encodeURIComponent(path)}&stream=${stream}` +
-              `&t=${Math.max(0, t).toFixed(3)}&dur=${dur}`;
-  const a = new Audio(url);
-  currentAudio = a; currentBtn = btn;
+  currentBtn = btn;
   if (btn) btn.classList.add('playing');
 
-  NP.path = path; NP.stream = stream; NP.t = Math.max(0, t); NP.dur = dur;
+  NP.path = path; NP.stream = stream;
   NP.name = opts.name || path.split('/').pop();
   NP.streams = opts.streams || [];
-  renderNowPlaying();
+  NP.chain = !opts.snippet;
+  NP.fileDur = opts.duration || durCache.get(path) || 0;
 
-  a.onended = stopAudio;
-  a.onerror = () => { toast('Could not play that stream', 'bad'); stopAudio(); };
-  a.play().catch(() => {});
+  // Continuous playback starts on a full window so the first chain-on happens
+  // half a minute in rather than after the six seconds a snippet asks for.
+  playWindow(t, NP.chain ? Math.max(dur, CHUNK) : dur);
+
+  if (!NP.fileDur) {
+    // The bar is usable without it; it just cannot span the file until the
+    // probe lands, so fill it in behind the playback rather than before it.
+    ensureFileDur(path).then(d => {
+      if (NP.path === path) { NP.fileDur = d; drawProgress(); }
+    });
+  }
 }
 
 /** Switch to another track of the same file, continuing where we are.
@@ -118,12 +197,42 @@ function play(path, stream, t, dur, btn, opts = {}) {
 function switchTrack(stream) {
   if (!NP.path || !currentAudio) return;
   const elapsed = currentAudio.currentTime || 0;
-  const remaining = Math.max(2, NP.dur - elapsed);
-  const at = NP.t + elapsed;
-  const opts = { name: NP.name, streams: NP.streams };
-  const path = NP.path;
-  stopAudio();
-  play(path, stream, at, remaining, null, opts);
+  const at = NP.base + elapsed;
+  NP.stream = stream;
+  // A snippet keeps its remaining length, so an A/B compare stays an A/B
+  // compare after the switch instead of running on into the next scene.
+  playWindow(at, NP.chain ? CHUNK : Math.max(2, NP.len - elapsed));
+}
+
+/** Jump anywhere in the track. Scrubbing means the operator is hunting for
+ *  speech, so it always plays on from there rather than stopping at a window. */
+function seekTo(t) {
+  if (!NP.path) return;
+  NP.chain = true;
+  playWindow(Math.max(0, t), CHUNK);
+}
+
+/** Length the scrub bar spans: the whole track once known, the decoded window
+ *  until then, so the head never runs off the end of the bar. */
+const npSpan = () => NP.fileDur || (NP.base + NP.len) || 1;
+
+let scrubAt = null;      // ghost position while the pointer is down
+
+function drawProgress() {
+  if (!NP.path) return;
+  const span = npSpan();
+  const at = scrubAt != null ? scrubAt : NP.base + (currentAudio?.currentTime || 0);
+  const pct = Math.max(0, Math.min(100, at / span * 100));
+
+  $('#npAt').textContent = fmt(at);
+  $('#npDur').textContent = NP.fileDur ? fmt(NP.fileDur) : '—';
+  $('#npFill').style.width = `${pct}%`;
+  $('#npHead').style.left = `${pct}%`;
+  // The loaded window, so a head that jumps when a window ends makes sense.
+  const w0 = Math.max(0, Math.min(100, NP.base / span * 100));
+  const w1 = Math.max(0, Math.min(100, (NP.base + NP.len) / span * 100));
+  $('#npWin').style.left = `${w0}%`;
+  $('#npWin').style.width = `${Math.max(0.5, w1 - w0)}%`;
 }
 
 function renderNowPlaying() {
@@ -133,7 +242,7 @@ function renderNowPlaying() {
 
   const cur = NP.streams.find(s => s.index === NP.stream);
   const tag = cur ? (cur.language || cur.title || `stream ${cur.index}`) : `stream ${NP.stream}`;
-  $('#npWhat').textContent = `${NP.name} — track #${NP.stream} (${tag}) from ${fmt(NP.t)}`;
+  $('#npWhat').textContent = `${NP.name} — track #${NP.stream} (${tag}) from ${fmt(NP.base)}`;
 
   const host = $('#npTracks');
   host.innerHTML = '';
@@ -154,6 +263,35 @@ function renderNowPlaying() {
 
 $('#npStop').onclick = stopAudio;
 
+// ── scrubbing ──
+{
+  const bar = $('#npBar');
+  const timeAt = ev => {
+    const r = bar.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+    return f * npSpan();
+  };
+  bar.onmousedown = ev => {
+    if (!NP.path) return;
+    ev.preventDefault();
+    scrubAt = timeAt(ev);
+    bar.classList.add('scrubbing');
+    drawProgress();
+  };
+  window.addEventListener('mousemove', ev => {
+    if (scrubAt == null) return;
+    scrubAt = timeAt(ev);
+    drawProgress();
+  });
+  window.addEventListener('mouseup', () => {
+    if (scrubAt == null) return;
+    const t = scrubAt;
+    scrubAt = null;
+    bar.classList.remove('scrubbing');
+    seekTo(t);
+  });
+}
+
 /** A listen button. Defaults to mid-file, which is where speech lives —
  *  the opening theme is identical in every language and proves nothing. */
 function playBtn(path, stream, t, dur = 6, label = '▶', opts = {}) {
@@ -165,6 +303,10 @@ function playBtn(path, stream, t, dur = 6, label = '▶', opts = {}) {
 
 /** Mid-file, clamped so short files still land inside the audio. */
 const midpoint = pr => Math.max(5, (pr?.duration || 600) / 2);
+
+/** Everything a listen button needs to describe what it is playing. */
+const listenOpts = pr => ({
+  name: pr?.name, streams: pr?.audio || [], duration: pr?.duration || 0 });
 
 // ─────────────────────────── persistence ────────────────────────────
 
@@ -178,7 +320,8 @@ function saveLocal() {
       sourceMode: S.sourceMode,
       sourceDir: S.sourceDir,
       pairs: S.pairs.map(p => ({ ...p, jpn: stripProbe(p.jpn), dub: stripProbe(p.dub) })),
-      edits: S.edits.map(e => ({ ...e, probe: null, wave: null })),
+      edits: S.edits.map(e => ({ ...e, probe: null, wave: null,
+                                 waveView: null, waveSel: null })),
       editDir: S.editDir, projectName: S.projectName,
     }));
   } catch (_) {}
@@ -321,7 +464,7 @@ function streamChooser(pr, picked, onPick) {
       `<span>${esc(a.codec || '?')} · ${a.channels || '?'}ch</span>` +
       `<span class="tag">${esc(tag)}${title}</span>`;
     const sp = document.createElement('span'); sp.style.flex = '1'; row.append(sp);
-    row.append(playBtn(pr.path, a.index, mid, 6, '▶ listen'));
+    row.append(playBtn(pr.path, a.index, mid, 6, '▶ listen', listenOpts(pr)));
     box.append(row);
   }
   if (!pr.audio.length) box.innerHTML = '<p class="hint bad">No audio streams.</p>';
@@ -374,10 +517,10 @@ function pairForFile(path) {
   return S.pairs.find(p => p.jpn?.path === path || p.dub?.path === path) || null;
 }
 
-function newPair(label) {
+function newPair(label, { top = false } = {}) {
   const p = { id: uid(), label: label || `Episode ${S.pairs.length + 1}`,
               jpn: null, dub: null, offset: null, offsetReport: null };
-  S.pairs.push(p);
+  if (top) S.pairs.unshift(p); else S.pairs.push(p);
   return p;
 }
 
@@ -415,6 +558,7 @@ function renderPairs() {
 
   if (S.sourceMode === 'separate') { renderPool(); renderPairTable(); }
   else { renderMultitrack(); }
+  renderAssignStatus();
 }
 
 // ── mode A: the file pool ──
@@ -477,8 +621,7 @@ function renderPool() {
 
     const first = (pr.audio || [])[0];
     if (first) {
-      chip.append(playBtn(pr.path, first.index, midpoint(pr), 6, '▶',
-                          { name: pr.name, streams: pr.audio }));
+      chip.append(playBtn(pr.path, first.index, midpoint(pr), 6, '▶', listenOpts(pr)));
     }
     host.append(chip);
   }
@@ -518,7 +661,7 @@ function dropSlot(pair, role) {
   const audio = slot.probe?.audio || [];
   if (slot.stream != null) {
     top.append(playBtn(slot.path, slot.stream, midpoint(slot.probe), 6, '▶',
-                       { name: slot.name, streams: audio }));
+                       { ...listenOpts(slot.probe), name: slot.name }));
   }
   const x = document.createElement('button');
   x.className = 'play'; x.textContent = '✕'; x.title = 'remove';
@@ -561,8 +704,11 @@ function renderPairTable() {
 
     const head = document.createElement('div');
     head.className = 'row';
+    // Episode labels are short ("Episode 3", "One Piece 384"). Letting the
+    // field grow to the full card width strands the name on the left and the
+    // buttons on the right with a metre of nothing between them.
     const name = document.createElement('input');
-    name.value = p.label; name.style.flex = '1'; name.style.minWidth = '140px';
+    name.value = p.label; name.style.width = 'min(280px,100%)';
     name.oninput = () => { p.label = name.value; saveLocal(); refreshEditCards(); };
     head.append(name);
 
@@ -571,6 +717,8 @@ function renderPairTable() {
       why.className = 'pill'; why.textContent = 'auto'; why.title = p.reason;
       head.append(why);
     }
+    head.append(Object.assign(document.createElement('span'),
+      { style: 'flex:1' }));
     const del = document.createElement('button');
     del.className = 'btn sm danger'; del.textContent = 'Remove';
     del.onclick = () => {
@@ -597,8 +745,10 @@ function renderPairTable() {
   }
 }
 
+/* New rows go on top: the row you just made is the one you are about to drag
+ * files into, and a long library would otherwise push it off the screen. */
 $('#btnAddPair').onclick = () => {
-  newPair(`Episode ${S.pairs.length + 1}`);
+  newPair(`Episode ${S.pairs.length + 1}`, { top: true });
   saveLocal(); renderPairs();
 };
 
@@ -705,8 +855,7 @@ function renderMultitrack() {
       be.onclick = () => isEng ? clearRole(pr, 'dub') : setRole(pr, a.index, 'dub');
       row.append(bj, be);
 
-      row.append(playBtn(pr.path, a.index, midpoint(pr), 8, '▶ listen',
-                         { name: pr.name, streams: audio }));
+      row.append(playBtn(pr.path, a.index, midpoint(pr), 8, '▶ listen', listenOpts(pr)));
       list.append(row);
     }
     card.append(list);
@@ -806,9 +955,9 @@ function offsetUI(pair) {
     cmp.append(Object.assign(document.createElement('span'),
       { className: 'hint', textContent: 'Same scene?' }));
     cmp.append(playBtn(pair.jpn.path, pair.jpn.stream, t, 6, '▶ jpn',
-                       { name: pair.jpn.name, streams: pair.jpn.probe?.audio || [] }));
+                       { ...listenOpts(pair.jpn.probe), name: pair.jpn.name, snippet: true }));
     cmp.append(playBtn(pair.dub.path, pair.dub.stream, t - (pair.offset || 0), 6, '▶ dub',
-                       { name: pair.dub.name, streams: pair.dub.probe?.audio || [] }));
+                       { ...listenOpts(pair.dub.probe), name: pair.dub.name, snippet: true }));
     cmp.append(Object.assign(document.createElement('span'), {
       className: 'hint',
       textContent: 'Both should be the same moment in different languages.' }));
@@ -847,6 +996,7 @@ $('#btnLoadSources').onclick = async () => {
     const probes = await api('/api/probe', {
       method: 'POST', body: JSON.stringify({ paths: d.files.map(f => f.path) }) });
     S.sourceFiles = probes.files;
+    probes.files.forEach(rememberDuration);
     setFolder('sources', d.dir);
 
     // Re-attach probe data to any pairs restored from a saved setup.
@@ -872,8 +1022,8 @@ $('#btnLoadSources').onclick = async () => {
 $('#btnClearPairs').onclick = () => {
   if (!S.pairs.length) return;
   S.pairs = [];
+  S.assignUnmatched = [];
   for (const e of S.edits) e.sources = [];
-  $('#assignReport').innerHTML = '';
   saveLocal(); renderPairs(); refreshEditCards();
 };
 
@@ -900,7 +1050,7 @@ $('#btnAutoAssign').onclick = async () => {
     }));
     for (const e of S.edits) e.sources = [];
 
-    renderAssignReport(r);
+    S.assignUnmatched = r.unmatched || [];
     saveLocal(); renderPairs(); refreshEditCards();
     toast(`Assigned ${r.pairs.length}, left ${r.unmatched.length} for you`,
           r.unmatched.length ? 'info' : 'ok');
@@ -911,35 +1061,53 @@ $('#btnAutoAssign').onclick = async () => {
   }
 };
 
-function renderAssignReport(r) {
+/** The status line above the pools.
+ *
+ * Counted from the current state on every render, never from what auto-assign
+ * happened to return — dragging a file in has to move these numbers, and a
+ * stale "3 unassigned" next to a full table is worse than no status at all.
+ * Auto-assign only contributes its per-file reasons, and only for files that
+ * are still sitting unassigned.
+ */
+function renderAssignStatus() {
   const host = $('#assignReport');
   host.innerHTML = '';
-  if (!r.pairs.length && !r.unmatched.length) return;
+  if (!S.sourceFiles.length && !S.pairs.length) return;
+
+  const ready = S.pairs.filter(
+    p => p.jpn?.stream != null && p.dub?.stream != null).length;
+  const partial = S.pairs.length - ready;
+  const used = assignedPaths();
+  const left = S.sourceFiles.filter(f => !used.has(f.path));
 
   const sum = document.createElement('div');
   sum.className = 'row';
   sum.innerHTML =
-    `<span class="pill ok">${r.pairs.length} assigned</span>` +
-    (r.unmatched.length
-      ? `<span class="pill warn">${r.unmatched.length} left for you</span>`
+    `<span class="pill ${ready ? 'ok' : ''}">${ready} episode${
+      ready === 1 ? '' : 's'} ready</span>` +
+    (partial ? `<span class="pill warn">${partial} incomplete</span>` : '') +
+    (left.length
+      ? `<span class="pill warn">${left.length} file${
+          left.length === 1 ? '' : 's'} unassigned</span>`
       : `<span class="pill ok">nothing left over</span>`);
   host.append(sum);
 
-  if (r.unmatched.length) {
-    const det = document.createElement('details');
-    det.style.marginTop = '7px';
-    det.innerHTML = `<summary class="hint" style="cursor:pointer">` +
-      `Why these were left alone</summary>`;
-    const ul = document.createElement('div');
-    ul.style.cssText = 'margin-top:6px;display:flex;flex-direction:column;gap:3px';
-    for (const u of r.unmatched) {
-      ul.insertAdjacentHTML('beforeend',
-        `<div class="hint"><span class="mono">${esc(u.path.split('/').pop())}</span>` +
-        ` — ${esc(u.why)}</div>`);
-    }
-    det.append(ul);
-    host.append(det);
+  if (!left.length) return;
+
+  const why = new Map((S.assignUnmatched || []).map(u => [u.path, u.why]));
+  const det = document.createElement('details');
+  det.style.marginTop = '7px';
+  det.innerHTML = '<summary class="hint" style="cursor:pointer">' +
+    'Which files are still unassigned</summary>';
+  const ul = document.createElement('div');
+  ul.style.cssText = 'margin-top:6px;display:flex;flex-direction:column;gap:3px';
+  for (const f of left) {
+    ul.insertAdjacentHTML('beforeend',
+      `<div class="hint"><span class="mono">${esc(f.name)}</span>` +
+      (why.has(f.path) ? ` — ${esc(why.get(f.path))}` : '') + `</div>`);
   }
+  det.append(ul);
+  host.append(det);
 }
 
 // ────────────────────────── step 2: edits ───────────────────────────
@@ -1033,9 +1201,12 @@ $('#btnLoadEdits').onclick = async () => {
       method: 'POST',
       body: JSON.stringify({ paths: d.files.map(f => f.path) }) });
     for (const pr of probes.files) {
+      rememberDuration(pr);
       if (known.has(pr.path)) continue;
+      // Selected by default: a folder of edits is normally a whole arc you
+      // want to run, and unticking the odd one is less work than ticking all.
       S.edits.push({ path: pr.path, name: pr.name, probe: pr, stream: null,
-                     sources: [], passthrough: [], selected: false, wave: null });
+                     sources: [], passthrough: [], selected: true, wave: null });
     }
     setFolder('edits', d.dir);
     saveLocal(); renderEdits();
@@ -1054,8 +1225,15 @@ $('#btnLoadEdits').onclick = async () => {
 
 function refreshEditCards() { renderEdits(); }
 
+/* Every waveform hangs mouseup/resize handlers off window, and renderEdits
+ * throws the whole list away on any change. Without this the handlers pile up
+ * on canvases that are no longer in the document. */
+let waveHandlers = new AbortController();
+
 function renderEdits() {
   const host = $('#editList');
+  waveHandlers.abort();
+  waveHandlers = new AbortController();
   host.innerHTML = '';
   $('#nEdits').textContent = S.edits.filter(e => e.selected).length;
 
@@ -1223,8 +1401,10 @@ function passthroughUI(e) {
     b.onclick = async () => {
       b.disabled = true; b.textContent = 'Decoding…';
       try {
+        // 4000 is the server's ceiling. It costs one decode either way, and
+        // the extra resolution is what zooming has to draw from.
         e.wave = await api(`/api/waveform?path=${encodeURIComponent(e.path)}` +
-                           `&stream=${e.stream}&points=1400`);
+                           `&stream=${e.stream}&points=4000`);
         renderEdits();
       } catch (err) { toast(err.message, 'bad'); b.disabled = false;
                       b.textContent = 'Load waveform'; }
@@ -1264,11 +1444,12 @@ function passthroughUI(e) {
     del.className = 'btn sm danger'; del.textContent = '✕';
     del.onclick = () => { e.passthrough.splice(i, 1); saveLocal(); renderEdits(); };
 
+    const snip = { ...listenOpts(e.probe), name: e.name, snippet: true };
     row.append(lab,
       Object.assign(document.createElement('span'), { className: 'hint', textContent: 'from' }), a,
-      playBtn(e.path, e.stream, r.t0 - 2, 6, '▶ start'),
+      playBtn(e.path, e.stream, r.t0 - 2, 6, '▶ start', snip),
       Object.assign(document.createElement('span'), { className: 'hint', textContent: 'to' }), b,
-      playBtn(e.path, e.stream, r.t1 - 3, 6, '▶ end'),
+      playBtn(e.path, e.stream, r.t1 - 3, 6, '▶ end', snip),
       Object.assign(document.createElement('span'), {
         className: 'hint mono', textContent: `${(r.t1 - r.t0).toFixed(1)}s` }),
       del);
@@ -1288,6 +1469,11 @@ function passthroughUI(e) {
   return box;
 }
 
+/* Zoomed all the way in, one pixel is worth this many seconds at a typical
+ * window width — past it the envelope is a flat line and only the readout
+ * moves, so there is nothing left to see. */
+const WAVE_MIN_SPAN = 0.5;
+
 function waveCanvas(e) {
   const wrap = document.createElement('div');
   const cv = document.createElement('canvas');
@@ -1299,7 +1485,26 @@ function waveCanvas(e) {
   wrap.append(info);
 
   const dur = e.wave.duration;
-  let sel = null, dragging = false;
+
+  /* Zoom and selection live on the edit, not in this closure: marking a range
+   * re-renders every card from scratch, and losing your zoom every time you
+   * added one would make the zoom useless for setting the next one. */
+  if (!e.waveView || !(e.waveView.t1 > e.waveView.t0) || e.waveView.t1 > dur + 0.01) {
+    e.waveView = { t0: 0, t1: dur };
+  }
+  const view = e.waveView;
+  let sel = e.waveSel || null;
+  let dragging = false, panning = false, panFrom = 0;
+
+  const span = () => view.t1 - view.t0;
+  const zoomed = () => span() < dur - 0.01;
+
+  /** Keep the window inside the file, whatever the caller did to it. */
+  const clampView = (t0, s) => {
+    const w = Math.max(WAVE_MIN_SPAN, Math.min(s, dur));
+    view.t0 = Math.max(0, Math.min(t0, dur - w));
+    view.t1 = view.t0 + w;
+  };
 
   const draw = () => {
     const rect = cv.getBoundingClientRect();
@@ -1309,80 +1514,153 @@ function waveCanvas(e) {
     if (!g) return;           // no canvas: the numeric controls still work
     g.scale(dpr, dpr);
     const W = rect.width, H = 88;
+    const xOf = t => (t - view.t0) / span() * W;
     g.clearRect(0, 0, W, H);
 
+    // One column per pixel, taking the loudest envelope point it covers, so
+    // zooming out never hides a transient by sampling past it.
     const pts = e.wave.points, n = pts.length;
+    const perSec = n / dur;
     g.fillStyle = '#2f81f7';
     for (let x = 0; x < W; x++) {
-      const v = pts[Math.min(n - 1, Math.floor(x / W * n))];
-      const h = Math.max(1, v * (H - 8));
-      g.fillRect(x, (H - h) / 2, 1, h);
+      const a = Math.floor((view.t0 + x / W * span()) * perSec);
+      const b = Math.max(a + 1, Math.ceil((view.t0 + (x + 1) / W * span()) * perSec));
+      let v = 0;
+      for (let i = Math.max(0, a); i < Math.min(n, b); i++) if (pts[i] > v) v = pts[i];
+      const h = Math.max(1, v * (H - 14));
+      g.fillRect(x, 6 + (H - 14 - h) / 2, 1, h);
     }
 
     for (const r of e.passthrough) {
-      const x0 = r.t0 / dur * W, x1 = r.t1 / dur * W;
+      const x0 = xOf(r.t0), x1 = xOf(r.t1);
+      if (x1 < 0 || x0 > W) continue;
       g.fillStyle = 'rgba(210,153,34,.28)';
-      g.fillRect(x0, 0, Math.max(1, x1 - x0), H);
+      g.fillRect(x0, 5, Math.max(1, x1 - x0), H - 5);
       g.fillStyle = '#d29922';
-      g.fillRect(x0, 0, 1, H); g.fillRect(x1 - 1, 0, 1, H);
+      g.fillRect(x0, 5, 1, H - 5); g.fillRect(x1 - 1, 5, 1, H - 5);
       g.font = '10px ui-monospace,monospace';
-      g.fillText(r.label || 'passthrough', x0 + 4, 11);
+      g.fillText(r.label || 'passthrough', x0 + 4, 16);
     }
 
     if (sel) {
-      const x0 = Math.min(sel.a, sel.b) / dur * W, x1 = Math.max(sel.a, sel.b) / dur * W;
+      const x0 = xOf(Math.min(sel.a, sel.b)), x1 = xOf(Math.max(sel.a, sel.b));
       g.fillStyle = 'rgba(88,166,255,.25)';
-      g.fillRect(x0, 0, x1 - x0, H);
+      g.fillRect(x0, 5, x1 - x0, H - 5);
       g.fillStyle = '#58a6ff';
-      g.fillRect(x0, 0, 1, H); g.fillRect(x1 - 1, 0, 1, H);
+      g.fillRect(x0, 5, 1, H - 5); g.fillRect(x1 - 1, 5, 1, H - 5);
     }
+
+    // Where the window sits in the whole file, so a zoomed view still says
+    // which part of the episode you are looking at.
+    g.fillStyle = '#21262d'; g.fillRect(0, 0, W, 4);
+    g.fillStyle = zoomed() ? '#58a6ff' : '#30363d';
+    g.fillRect(view.t0 / dur * W, 0, Math.max(2, span() / dur * W), 4);
 
     g.fillStyle = '#8b949e';
     g.font = '10px ui-monospace,monospace';
     for (let i = 0; i <= 6; i++) {
       const x = i / 6 * W;
-      g.fillText(fmt(i / 6 * dur).slice(0, 5), Math.min(W - 30, x + 2), H - 3);
+      const t = view.t0 + i / 6 * span();
+      // Sub-minute windows need the seconds' decimals to be worth reading.
+      const lbl = span() < 20 ? fmt(t).slice(0, 8) : fmt(t).slice(0, 5);
+      g.fillText(lbl, Math.min(W - 44, x + 2), H - 3);
     }
   };
 
   const timeAt = ev => {
     const rect = cv.getBoundingClientRect();
-    return Math.max(0, Math.min(dur, (ev.clientX - rect.left) / rect.width * dur));
+    const t = view.t0 + (ev.clientX - rect.left) / rect.width * span();
+    return Math.max(0, Math.min(dur, t));
   };
 
-  cv.onmousedown = ev => { dragging = true; const t = timeAt(ev); sel = { a: t, b: t }; draw(); };
-  cv.onmousemove = ev => { if (dragging) { sel.b = timeAt(ev); draw(); renderInfo(); } };
+  // Shift+wheel zooms about the pointer. Plain wheel is left alone so the page
+  // still scrolls — the canvas is in the middle of a long form.
+  cv.addEventListener('wheel', ev => {
+    if (!ev.shiftKey) return;
+    ev.preventDefault();
+    // Browsers report shift+wheel as horizontal on some platforms.
+    const d = ev.deltaY || ev.deltaX;
+    if (!d) return;
+    const focus = timeAt(ev);
+    const s = span() * Math.exp(d * 0.0015);
+    const frac = (focus - view.t0) / span();      // hold the pointer's time still
+    clampView(focus - frac * Math.max(WAVE_MIN_SPAN, Math.min(s, dur)), s);
+    draw(); renderInfo();
+  }, { passive: false });
+
+  cv.onmousedown = ev => {
+    // Alt or middle button pans; anything else selects.
+    if (ev.altKey || ev.button === 1) {
+      ev.preventDefault();
+      panning = true; panFrom = timeAt(ev);
+      cv.style.cursor = 'grabbing';
+      return;
+    }
+    if (ev.button !== 0) return;
+    dragging = true;
+    const t = timeAt(ev);
+    sel = { a: t, b: t }; e.waveSel = sel;
+    draw();
+  };
+  cv.onmousemove = ev => {
+    if (panning) {
+      clampView(view.t0 - (timeAt(ev) - panFrom), span());
+      draw(); renderInfo();
+      return;
+    }
+    if (dragging) { sel.b = timeAt(ev); draw(); renderInfo(); }
+  };
   window.addEventListener('mouseup', () => {
+    if (panning) { panning = false; cv.style.cursor = ''; }
     if (!dragging) return;
     dragging = false;
-    if (sel && Math.abs(sel.b - sel.a) < 0.5) sel = null;
+    // A click, not a drag: clear rather than leave a zero-width selection.
+    if (sel && Math.abs(sel.b - sel.a) < span() / 400) sel = null;
+    e.waveSel = sel;
     draw(); renderInfo();
-  });
+  }, { signal: waveHandlers.signal });
 
   function renderInfo() {
     info.innerHTML = '';
+
+    const zoom = document.createElement('span');
+    zoom.className = 'hint mono';
+    zoom.textContent = zoomed()
+      ? `${fmt(view.t0).slice(0, 5)}–${fmt(view.t1).slice(0, 5)} · ${span().toFixed(1)}s wide`
+      : `whole file · ${fmt(dur).slice(0, 5)}`;
+    info.append(zoom);
+
+    if (zoomed()) {
+      const fit = document.createElement('button');
+      fit.className = 'btn sm'; fit.textContent = 'Fit';
+      fit.onclick = () => { clampView(0, dur); draw(); renderInfo(); };
+      info.append(fit);
+    }
+
     if (!sel) {
       info.append(Object.assign(document.createElement('span'), {
         className: 'hint',
-        textContent: 'Drag across the theme to select it, then listen and add it.' }));
+        textContent: 'Drag across the theme to select it. Shift+scroll zooms, ' +
+                     'alt+drag pans.' }));
       return;
     }
     const t0 = Math.min(sel.a, sel.b), t1 = Math.max(sel.a, sel.b);
     info.append(Object.assign(document.createElement('span'), {
       className: 'mono', textContent: `${fmt(t0)} → ${fmt(t1)} (${(t1 - t0).toFixed(1)}s)` }));
-    info.append(playBtn(e.path, e.stream, t0 - 1.5, 6, '▶ at start'));
-    info.append(playBtn(e.path, e.stream, t1 - 4.5, 6, '▶ at end'));
+    const snip = { ...listenOpts(e.probe), name: e.name, snippet: true };
+    info.append(playBtn(e.path, e.stream, t0 - 1.5, 6, '▶ at start', snip));
+    info.append(playBtn(e.path, e.stream, t1 - 4.5, 6, '▶ at end', snip));
     const b = document.createElement('button');
     b.className = 'btn sm primary'; b.textContent = 'Mark as passthrough';
     b.onclick = () => {
       e.passthrough.push({ t0, t1, label: e.passthrough.length ? 'passthrough' : 'intro' });
-      sel = null; saveLocal(); renderEdits();
+      sel = null; e.waveSel = null; saveLocal(); renderEdits();
     };
     info.append(b);
   }
 
   requestAnimationFrame(() => { draw(); renderInfo(); });
-  window.addEventListener('resize', draw);
+  window.addEventListener('resize', draw, { signal: waveHandlers.signal });
   return wrap;
 }
 
@@ -1800,8 +2078,9 @@ function renderInspector() {
     row.className = 'row'; row.style.marginTop = '6px';
     row.append(Object.assign(document.createElement('span'),
       { className: 'hint', textContent: 'edit (jpn)' }));
-    row.append(playBtn(S.edl.edit_path, S.edl.edit_stream, s.t0, 6, '▶ start'));
-    row.append(playBtn(S.edl.edit_path, S.edl.edit_stream, s.t1 - 5, 6, '▶ end'));
+    const editSnip = { duration: S.edl.duration || 0, snippet: true };
+    row.append(playBtn(S.edl.edit_path, S.edl.edit_stream, s.t0, 6, '▶ start', editSnip));
+    row.append(playBtn(S.edl.edit_path, S.edl.edit_stream, s.t1 - 5, 6, '▶ end', editSnip));
 
     const dubPath = (S.edl.dub_paths || {})[String(s.src)];
     const dubStream = (S.edl.dub_streams || {})[String(s.src)];
@@ -1809,9 +2088,9 @@ function renderInspector() {
       const off = (S.edl.dub_offsets || {})[String(s.src)] || 0;
       row.append(Object.assign(document.createElement('span'),
         { className: 'hint', style: 'margin-left:8px', textContent: 'dub' }));
-      row.append(playBtn(dubPath, dubStream, s.src_t0 - off, 6, '▶ start'));
+      row.append(playBtn(dubPath, dubStream, s.src_t0 - off, 6, '▶ start', { snippet: true }));
       row.append(playBtn(dubPath, dubStream,
-        s.src_t0 - off + (s.t1 - s.t0) - 5, 6, '▶ end'));
+        s.src_t0 - off + (s.t1 - s.t0) - 5, 6, '▶ end', { snippet: true }));
     }
     host.append(row);
     host.append(Object.assign(document.createElement('p'), {
