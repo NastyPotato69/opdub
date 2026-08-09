@@ -8,8 +8,11 @@
 *.mp3
 *.flac
 
-# Generated outputs
-out/
+# Generated outputs. The folder itself is tracked so a fresh clone has it
+# already: docker-compose bind-mounts ./out, and if it does not exist the
+# daemon creates it root-owned, which you then cannot clean up without sudo.
+out/*
+!out/.gitkeep
 fixtures/
 
 # Local media directories (mount points — not committed)

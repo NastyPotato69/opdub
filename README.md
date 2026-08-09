@@ -17,9 +17,9 @@ with a dub track available for those sources. Everything else is derived.
 
 **Tutorial** — start here, in order
 
-1. [Install](#step-1--install)
-2. [Put your media where opdub can see it](#step-2--put-your-media-where-opdub-can-see-it)
-3. [Start the app](#step-3--start-the-app)
+1. [Get the code](#step-1--get-the-code)
+2. [Put your media in `input/`](#step-2--put-your-media-in-input)
+3. [Start it with Docker](#step-3--start-it-with-docker)
 4. [Set up your source library](#step-4--set-up-your-source-library)
 5. [Describe each edit](#step-5--describe-each-edit)
 6. [Run it](#step-6--run-it)
@@ -27,6 +27,7 @@ with a dub track available for those sources. Everything else is derived.
 
 **Reference**
 
+- [Other ways to install](#other-ways-to-install) — no Docker, or you want it on the host
 - [How it works](#how-it-works)
 - [Command line](#command-line)
 - [The EDL format](#the-edl-format)
@@ -40,168 +41,127 @@ with a dub track available for those sources. Everything else is derived.
 
 # Tutorial
 
-## Step 1 · Install
+**Docker is the recommended way to run this**, and the tutorial assumes it.
+It is the configuration that gets tested, it needs nothing on your machine but
+Docker itself, and it mounts your media read-only so the tool physically cannot
+modify your originals. If you would rather run it on the host, see
+[Other ways to install](#other-ways-to-install) and then rejoin at
+[step 2](#step-2--put-your-media-in-input).
 
-You need Python 3.11+, `numpy`/`scipy`, and `ffmpeg` on your `PATH`. Pick one
-of the four routes below — **A** if you are unsure, **B** if you would rather
-run everything in a container.
+## Step 1 · Get the code
 
-| Route | Use it when | Root needed |
-|---|---|---|
-| [A. Install script](#a-install-script) | Most cases. Installs only what is missing. | no |
-| [B. Docker](#b-docker) | You want isolation and read-only media by construction. | docker only |
-| [C. Manual](#c-manual) | You already have Python 3.11+ and ffmpeg. | no |
-| [D. By hand, no root](#d-by-hand-no-root) | Locked-down box; you want to see every step. | no |
+You need [Docker](https://docs.docker.com/get-docker/) with the Compose plugin.
+Check both:
 
-### A. Install script
+```bash
+docker --version
+docker compose version
+```
+
+Then clone the repo and go into it. **Every command from here on is run from
+inside this folder.**
 
 ```bash
 git clone https://github.com/NastyPotato69/opdub.git
 cd opdub
-./install.sh
 ```
 
-It checks for ffmpeg and a usable Python, installs whichever is missing, and
-creates a virtualenv at `.venv`. Nothing is written outside your home
-directory and root is never required.
+The clone already contains the two folders the container mounts, so there is
+nothing to create:
 
-Add `--verify` to run the test suite and score the bundled fixtures afterwards:
+```
+opdub/
+├── input/          your media — mounted read-only
+│   ├── edits/      ← already here
+│   └── sources/    ← already here
+└── out/            everything opdub produces — already here
+```
+
+Confirm it, if you like:
 
 ```bash
-./install.sh --verify
+ls -d input/edits input/sources out
 ```
 
-| Option | Meaning |
-|---|---|
-| `--prefix DIR` | Where binaries go (default `~/.local`) |
-| `--venv DIR` | Where the virtualenv goes (default `./.venv`) |
-| `--skip-ffmpeg` / `--skip-python` | Leave that component alone |
-| `--no-dev` | Skip `pytest` |
-| `--force` | Reinstall components that are already present |
-| `--verify` | Run the tests and score the fixtures afterwards |
-| `--dry-run` | Print the plan, change nothing |
-
-Everything it installs is recorded in `.opdub-install.manifest`, which is what
-makes [uninstalling](#uninstalling) exact. An ffmpeg or Python that was already
-on the machine is not recorded and never touched.
-
-> **macOS:** the script will not download binaries. Run `brew install ffmpeg`
-> first, then re-run it.
-
-Now go to [step 2](#step-2--put-your-media-where-opdub-can-see-it).
-
-### B. Docker
+If any are missing — an old clone, or a zip download that dropped empty
+directories — just make them, they carry no content:
 
 ```bash
-git clone https://github.com/NastyPotato69/opdub.git
-cd opdub
-docker compose up --build
+mkdir -p input/edits input/sources out
 ```
-
-The UI is on <http://localhost:8000>.
-
-Two volumes are mounted, both inside the project folder:
-
-```
-input/  → /input  (read-only)   your media
-out/    → /out    (writable)    everything opdub produces
-```
-
-`input/` is mounted `:ro`. That read-only flag — not a convention the code is
-trusted to follow — is what guarantees your source media is never modified.
-
-If your media cannot live in the project folder, point the mounts somewhere
-else with a `.env` file next to `docker-compose.yml`:
-
-```ini
-OPDUB_INPUT=/mnt/media/my-show
-OPDUB_OUTPUT=/mnt/big-disk/opdub-out
-```
-
-> **Upgrading matters here.** The frontend is baked into the image
-> (`COPY opdub ./opdub`), so `git pull` on its own changes nothing you can see.
-> Always rebuild: `git pull && docker compose up -d --build`. See
-> [Troubleshooting](#the-ui-did-not-change-after-an-upgrade).
-
-Now go to [step 2](#step-2--put-your-media-where-opdub-can-see-it).
-
-### C. Manual
-
-If you already have Python 3.11+ and ffmpeg:
-
-```bash
-git clone https://github.com/NastyPotato69/opdub.git
-cd opdub
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-### D. By hand, no root
-
-Exactly what `install.sh` automates, written out so you can see it:
-
-```bash
-# 1. a Python that does not exist on the system yet
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-uv venv --python 3.11 .venv
-uv pip install --python .venv -r requirements.txt
-
-# 2. a static ffmpeg, no package manager involved
-curl -sS -L -o ff.tar.xz \
-  https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-tar xf ff.tar.xz
-cp ffmpeg-*/bin/ffmpeg ffmpeg-*/bin/ffprobe "$HOME/.local/bin/"
-```
-
-Use `linuxarm64` instead of `linux64` on ARM.
 
 ---
 
-## Step 2 · Put your media where opdub can see it
+## Step 2 · Put your media in `input/`
 
-Two trees ship with the repo, both empty:
-
-```
-input/          your media — never written to
-├── edits/      the fan edits you want dubbed
-└── sources/    the original episodes they were cut from
-out/            everything opdub produces
-```
-
-Copy your files in:
+Copy your files in. Sources are the original episodes; edits are the fan re-cuts
+you want dubbed.
 
 ```bash
 cp /path/to/your/edits/*.mkv     input/edits/
 cp /path/to/your/originals/*.mkv input/sources/
 ```
 
-**The layout is a suggestion, not a requirement.** Nest it however you like —
-`input/season-2/`, `input/arc-11/sources/` — because the app lists folders that
-contain media rather than expecting fixed names. Symlinks work too, if you would
-rather not copy hundreds of gigabytes:
+**Your sources need a dub somewhere.** Either as separate files per language, or
+as one file with several audio tracks. Both work, and you pick which in
+[step 4](#step-4--set-up-your-source-library).
 
-```bash
-ln -s /mnt/media/my-show/originals input/sources
+**The layout is a suggestion, not a requirement.** Nest it however you like —
+`input/season-2/`, `input/arc-11/sources/` — because the app lists any folder
+that contains media rather than expecting fixed names.
+
+**Copying hundreds of gigabytes is optional** — but *not* with a symlink.
+A link inside `input/` pointing at your library is rejected: every requested
+path is resolved before it is checked, so the link resolves to its real
+location, which is outside the configured roots. That is the same check that
+keeps the tool away from the rest of your disk, and it applies whether or not
+you use Docker.
+
+Point the mount itself at your library instead, with a `.env` file next to
+`docker-compose.yml`:
+
+```ini
+OPDUB_INPUT=/mnt/media/my-show
+OPDUB_OUTPUT=/mnt/big-disk/opdub-out
 ```
 
-**Your sources need a dub somewhere.** Either as separate files per language, or
-as one file with several audio tracks. Both are supported and you will pick
-which in [step 4](#step-4--set-up-your-source-library).
+Your library then appears as the media root, so arrange edits and sources in
+subfolders under it.
 
 ---
 
-## Step 3 · Start the app
-
-If you used Docker, it is already running on <http://localhost:8000>. Otherwise:
+## Step 3 · Start it with Docker
 
 ```bash
-.venv/bin/uvicorn opdub.server:app --port 8000
+docker compose up --build
 ```
 
-Then open <http://localhost:8000>. By default it reads `./input` and writes
-`./out` relative to where you started it, so run it from the project folder. To
-point elsewhere, see [Configuration](#configuration).
+The first run builds the image — a few minutes, mostly installing ffmpeg. You
+are ready when the log shows:
+
+```
+Uvicorn running on http://0.0.0.0:8000
+```
+
+**Open <http://localhost:8000>.**
+
+To run it in the background instead, add `-d`, and use `docker compose logs -f`
+to watch it and `docker compose down` to stop it.
+
+What the compose file sets up:
+
+| Host | Container | Mode |
+|---|---|---|
+| `./input` | `/input` | **read-only** |
+| `./out` | `/out` | writable |
+
+That `:ro` flag is the enforcement mechanism for "never modify the originals" —
+not a convention the code is trusted to follow.
+
+> **Upgrading later.** The frontend is baked into the image
+> (`COPY opdub ./opdub`), so `git pull` alone changes nothing you can see.
+> Always rebuild: `git pull && docker compose up -d --build`. See
+> [Troubleshooting](#the-ui-did-not-change-after-an-upgrade).
 
 You should see four numbered tabs. They are meant to be worked through in
 order, and the badge on each shows how many items are ready.
@@ -317,6 +277,101 @@ flagged in red. Click a segment to inspect it, then:
 ---
 
 # Reference
+
+## Other ways to install
+
+Docker is the tested path and the tutorial above assumes it. These run opdub
+directly on the host instead. All of them need the repo cloned first, and
+`input/` and `out/` in it exactly as
+[step 1](#step-1--get-the-code) describes — the folders and the workflow do not
+change, only how the server gets started.
+
+Running on the host, you supply what the container would have: **Python 3.11+**,
+`numpy`/`scipy`, and **`ffmpeg`/`ffprobe` on your `PATH`**. Nothing enforces the
+read-only rule any more — that came from the `:ro` mount — so the media roots
+are protected only by the server's own path checks.
+
+### A. Install script
+
+Installs whatever is missing, nothing that is not:
+
+```bash
+git clone https://github.com/NastyPotato69/opdub.git
+cd opdub
+./install.sh
+```
+
+It checks for ffmpeg and a usable Python, fetches whichever is absent, and
+creates a virtualenv at `.venv` holding numpy, scipy, fastapi and uvicorn —
+fastapi and uvicorn being the web UI's server. The frontend itself needs no
+installing: it is plain HTML and JavaScript served from `opdub/static/`, with
+no build step and no npm.
+
+Nothing is written outside your home directory and root is never required.
+
+Then start it — the script prints this line for you when it finishes:
+
+```bash
+OPDUB_MEDIA=./input OPDUB_OUT=./out \
+    .venv/bin/uvicorn opdub.server:app --port 8000
+```
+
+and open <http://localhost:8000>. Those are the defaults, so plain
+`.venv/bin/uvicorn opdub.server:app --port 8000` from the project folder does
+the same thing. The server runs in the foreground; closing the terminal stops
+it. Continue from [step 2](#step-2--put-your-media-in-input).
+
+| Option | Meaning |
+|---|---|
+| `--prefix DIR` | Where binaries go (default `~/.local`) |
+| `--venv DIR` | Where the virtualenv goes (default `./.venv`) |
+| `--skip-ffmpeg` / `--skip-python` | Leave that component alone |
+| `--no-dev` | Skip `pytest` |
+| `--force` | Reinstall components that are already present |
+| `--verify` | Run the tests and score the fixtures afterwards |
+| `--dry-run` | Print the plan, change nothing |
+
+Everything it installs is recorded in `.opdub-install.manifest`, which is what
+makes [uninstalling](#uninstalling) exact. An ffmpeg or Python that was already
+on the machine is not recorded and never touched.
+
+> **macOS:** the script will not download binaries. Run `brew install ffmpeg`
+> first, then re-run it.
+
+### B. Manual
+
+If you already have Python 3.11+ and ffmpeg:
+
+```bash
+git clone https://github.com/NastyPotato69/opdub.git
+cd opdub
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/uvicorn opdub.server:app --port 8000
+```
+
+### C. By hand, no root
+
+Exactly what `install.sh` automates, written out so you can see it:
+
+```bash
+# 1. a Python that does not exist on the system yet
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv venv --python 3.11 .venv
+uv pip install --python .venv -r requirements.txt
+
+# 2. a static ffmpeg, no package manager involved
+curl -sS -L -o ff.tar.xz \
+  https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
+tar xf ff.tar.xz
+cp ffmpeg-*/bin/ffmpeg ffmpeg-*/bin/ffprobe "$HOME/.local/bin/"
+
+# 3. start it
+.venv/bin/uvicorn opdub.server:app --port 8000
+```
+
+Use `linuxarm64` instead of `linux64` on ARM.
 
 ## How it works
 
@@ -519,6 +574,26 @@ files the server is serving.
   `git pull && docker compose up -d --build`.
 - **The marker is red and says `stale`.** The page in front of you is a cached
   copy older than the server's. Reload with <kbd>ctrl+shift+R</kbd>.
+
+### Files in `out/` are owned by root
+
+The container runs as root, so everything it writes into the mounted `out/` is
+root-owned on the host. Reading and playing them is fine; deleting or moving
+them needs `sudo`. To take ownership of what is already there:
+
+```bash
+sudo chown -R "$USER:$USER" out/
+```
+
+To avoid it for future runs, add your own ids to the service in
+`docker-compose.yml`:
+
+```yaml
+    user: "1000:1000"      # your `id -u`:`id -g`
+```
+
+The folder itself ships in the clone precisely so Docker does not create it
+root-owned before you ever get the chance.
 
 ### An edit I already loaded is not selected
 
