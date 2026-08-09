@@ -56,7 +56,7 @@ w.Element.prototype.getBoundingClientRect = function () {
 // Appended here rather than shipped in app.js.
 w.eval(readFileSync(JS, 'utf8') +
   '\n;window.__t = { get S(){return S}, get NP(){return NP}, saveLocal, renderEdits,' +
-  ' renderPairs, loadEdlList, openEdl, saveEdl };');
+  ' renderPairs, loadEdlList, openEdl, saveEdl, renderBuild };');
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const $ = s => w.document.querySelector(s);
@@ -80,6 +80,42 @@ try {
   ck('no runtime errors on boot', errors.length === 0, errors.join('\n'));
   ck('config reached the page', $('#rootsLabel').textContent.includes('/input'),
      $('#rootsLabel').textContent);
+
+  sec('build marker');
+  const cfg = await (await fetch(BASE + '/api/config')).json();
+  ck('server reports a UI build', /^[0-9a-f]{8}$/.test(cfg.ui_build || ''), cfg.ui_build);
+  ck('server reports when it was built', /^\d{4}-\d\d-\d\d/.test(cfg.ui_built_at || ''),
+     cfg.ui_built_at);
+
+  const servedJs = await (await fetch(BASE + '/app.js')).text();
+  ck('served app.js carries the stamp',
+     servedJs.includes(`window.__OPDUB_BUILD="${cfg.ui_build}"`),
+     servedJs.slice(-60));
+  const jsHeaders = (await fetch(BASE + '/app.js')).headers;
+  ck('app.js is served no-cache', jsHeaders.get('cache-control') === 'no-cache',
+     jsHeaders.get('cache-control'));
+
+  // The harness evals app.js off disk, so this tab has no stamp of its own —
+  // nothing to compare, and it must not cry stale on that account.
+  ck('header shows the build', $('#buildLabel').textContent === `ui ${cfg.ui_build}`,
+     $('#buildLabel').textContent);
+  ck('an unstamped page is not called stale',
+     !$('#buildLabel').className.includes('bad'), $('#buildLabel').className);
+
+  // A cached page: stamp compiled in, server moved on.
+  w.__OPDUB_BUILD = 'deadbeef';
+  T().renderBuild();
+  ck('a cached build is called out', $('#buildLabel').textContent.includes('stale'),
+     $('#buildLabel').textContent);
+  ck('the stale marker is red', $('#buildLabel').className.includes('bad'),
+     $('#buildLabel').className);
+  ck('the stale marker says how to fix it',
+     $('#buildLabel').title.includes('ctrl+shift+R'), $('#buildLabel').title);
+  delete w.__OPDUB_BUILD;
+  T().renderBuild();
+  ck('marker recovers once the stamps agree',
+     $('#buildLabel').textContent === `ui ${cfg.ui_build}` &&
+     !$('#buildLabel').className.includes('bad'), $('#buildLabel').textContent);
 
   const srcDir = state('S.sourceDir'), editDir = state('S.editDir');
   ck('sources folder defaulted to .../sources', srcDir.endsWith('/input/sources'), srcDir);

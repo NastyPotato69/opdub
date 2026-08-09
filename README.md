@@ -94,6 +94,11 @@ serving the UI from the image it was built with. Always rebuild:
 git pull && docker compose up -d --build
 ```
 
+The header carries a build marker — `ui b87aad12` — hashed from the frontend
+files the server is serving. If it does not change after an upgrade, the image
+was not rebuilt. If it turns red and says `stale`, the page in front of you is
+a cached copy older than the server's: reload with <kbd>ctrl+shift+R</kbd>.
+
 `input/` is mounted `:ro`. That read-only flag — not a convention the code is
 trusted to follow — is what guarantees source episodes are never modified.
 

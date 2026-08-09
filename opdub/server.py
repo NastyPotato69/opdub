@@ -508,11 +508,16 @@ async def _startup() -> None:
 
 @app.get("/api/config")
 def api_config() -> dict:
+    build, built_at = _ui_build()
     return {
         "roots": [{"path": str(r), "exists": r.exists(), "writable": False}
                   for r in MEDIA_ROOTS],
         "out": str(OUT_DIR),
         "media_exts": sorted(MEDIA_EXTS),
+        # What the server has on disk. The page compares it against the stamp
+        # baked into the app.js it actually loaded.
+        "ui_build": build,
+        "ui_built_at": built_at,
     }
 
 
@@ -916,6 +921,28 @@ def api_download(path: str):
 NO_CACHE = {"Cache-Control": "no-cache"}
 
 
+UI_FILES = ("index.html", "app.js")
+
+
+def _ui_build() -> tuple[str, str]:
+    """Fingerprint the files the browser runs, and when they last changed.
+
+    Content, not a version number: the image carries no git metadata, and a
+    hand-maintained constant is exactly the thing that gets forgotten. Hashing
+    90 KB costs microseconds and it is right in every install — Docker, manual
+    and a dev tree being edited under a live server.
+    """
+    h = hashlib.sha1()
+    newest = 0.0
+    for name in UI_FILES:
+        f = STATIC_DIR / name
+        if f.exists():
+            h.update(f.read_bytes())
+            newest = max(newest, f.stat().st_mtime)
+    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(newest)) if newest else ""
+    return h.hexdigest()[:8], stamp
+
+
 @app.get("/")
 def index():
     f = STATIC_DIR / "index.html"
@@ -929,4 +956,10 @@ def appjs():
     f = STATIC_DIR / "app.js"
     if not f.exists():
         return JSONResponse({"error": f"{f} missing"}, status_code=500)
-    return FileResponse(f, media_type="application/javascript", headers=NO_CACHE)
+    # The stamp is appended to the served bytes rather than read from disk by
+    # the page, so it describes the code actually running in that tab. A
+    # cached app.js carries the old stamp and the mismatch is what gives the
+    # "you are looking at a stale page" warning something true to compare.
+    body = f.read_text(encoding="utf-8") + f'\n;window.__OPDUB_BUILD="{_ui_build()[0]}";\n'
+    return Response(content=body, media_type="application/javascript",
+                    headers=NO_CACHE)

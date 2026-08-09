@@ -2220,6 +2220,38 @@ $('#btnLoadProject').onclick = async () => {
 
 // ─────────────────────────────── boot ───────────────────────────────
 
+/** Which build this tab is running, and whether the server has a newer one.
+ *
+ * The frontend is baked into the Docker image and the filenames carry no
+ * content hash, so the two ways an upgrade goes unnoticed are a container
+ * that was never rebuilt and a browser holding a cached app.js. The first
+ * shows up as an unchanged stamp after a pull; the second as a mismatch
+ * between the stamp compiled into this file and the one the server reports.
+ */
+function renderBuild() {
+  const el = $('#buildLabel');
+  const server = S.config.ui_build || '';
+  const running = window.__OPDUB_BUILD || '';
+  if (!server) { el.textContent = ''; return; }
+
+  const when = S.config.ui_built_at ? `, ${S.config.ui_built_at}` : '';
+  // No stamp at all means app.js was not served by this server — a dev
+  // opening the file directly, or a test harness. Nothing to compare.
+  if (!running || running === server) {
+    el.className = 'hint mono';
+    el.textContent = `ui ${server}`;
+    el.title = `Frontend build ${server}${when}`;
+    return;
+  }
+
+  el.className = 'hint bad mono';
+  el.textContent = `ui ${running} · stale`;
+  el.title = `This page is running build ${running}, but the server has ` +
+             `${server}${when}. Reload with ctrl+shift+R.`;
+  toast(`This page is a cached build (${running}); the server has ${server}. ` +
+        `Reload with ctrl+shift+R.`, 'bad', 15000);
+}
+
 function showStep(name) {
   $$('nav button').forEach(b => b.classList.toggle('active', b.dataset.step === name));
   $$('section.step').forEach(s => s.classList.toggle('active', s.id === `step-${name}`));
@@ -2240,6 +2272,7 @@ window.addEventListener('resize', () => {
       `<p style="padding:30px;color:#f85149">Cannot reach the server: ${esc(e.message)}</p>`;
     return;
   }
+  renderBuild();
   $('#rootsLabel').textContent =
     S.config.roots.map(r => r.path + (r.exists ? '' : ' (missing)')).join('  ·  ') +
     `   →   ${S.config.out}`;
