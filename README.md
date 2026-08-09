@@ -86,6 +86,14 @@ docker compose up --build
 
 The UI is on <http://localhost:8000>.
 
+**Upgrading.** The frontend is baked into the image (`COPY opdub ./opdub`), so
+a `git pull` on its own changes nothing you can see — the container keeps
+serving the UI from the image it was built with. Always rebuild:
+
+```bash
+git pull && docker compose up -d --build
+```
+
 `input/` is mounted `:ro`. That read-only flag — not a convention the code is
 trusted to follow — is what guarantees source episodes are never modified.
 

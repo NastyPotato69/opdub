@@ -906,12 +906,22 @@ def api_download(path: str):
 # static
 # --------------------------------------------------------------------------
 
+# There is no bundler and no content hash in these filenames, so a browser
+# given no Cache-Control applies heuristic caching and can serve a stale UI for
+# hours after an upgrade — with the server sitting there reporting the new
+# version. An upgrade nobody can see is worse than re-sending 90 KB over
+# loopback, so ask for a fetch every time. (FileResponse sends an ETag but
+# does not answer If-None-Match — only StaticFiles does — so this really is a
+# refetch, not a 304.)
+NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def index():
     f = STATIC_DIR / "index.html"
     if not f.exists():
         return JSONResponse({"error": f"{f} missing"}, status_code=500)
-    return FileResponse(f, media_type="text/html")
+    return FileResponse(f, media_type="text/html", headers=NO_CACHE)
 
 
 @app.get("/app.js")
@@ -919,4 +929,4 @@ def appjs():
     f = STATIC_DIR / "app.js"
     if not f.exists():
         return JSONResponse({"error": f"{f} missing"}, status_code=500)
-    return FileResponse(f, media_type="application/javascript")
+    return FileResponse(f, media_type="application/javascript", headers=NO_CACHE)
